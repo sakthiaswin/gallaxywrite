@@ -1,6 +1,6 @@
 import streamlit as st
 import bcrypt
-import streamlit_authenticator as stauth  # type: ignore
+import streamlit_authenticator as stauth
 from sqlalchemy import (
     create_engine,
     Column,
@@ -11,20 +11,19 @@ from sqlalchemy import (
     JSON,
     Boolean,
     ForeignKey,
-    relationship,
     Index,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker
-from datetime import datetime, timedelta
+from sqlalchemy.orm import sessionmaker, relationship, declarative_base
+from datetime import datetime
 import uuid
 import urllib.parse
 import re
 import base64
 import time
-import json
 from typing import List, Dict, Optional
 import hashlib
 import bleach
+
 # Lazy-load heavy libraries
 
 
@@ -32,9 +31,8 @@ def import_pdf_libraries():
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
     from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import inch
     from io import BytesIO
-    return letter, SimpleDocTemplate, Paragraph, Spacer, Image, getSampleStyleSheet, BytesIO  # Hardcoded APP_URL
+    return letter, SimpleDocTemplate, Paragraph, Spacer, Image, getSampleStyleSheet, BytesIO
 
 
 APP_URL = "https://gallaxywrite.streamlit.app/"
