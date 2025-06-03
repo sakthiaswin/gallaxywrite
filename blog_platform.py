@@ -317,13 +317,13 @@ class Draft(Base):
 
 # Association Tables
 blog_tags = Table(
-    'blog_tags', Base.metadataa,
+    'blog_tags', Base.metadata,
     Column('blog_id', String(36), ForeignKey('blogs.id'), primary_key=True),
     Column('tag_id', String(36), ForeignKey('tags.id'), primary_key=True)
 )
 
 case_study_tags = Table(
-    'case_study_tags', Base.metadataa,
+    'case_study_tags', Base.metadata,
     Column('case_study_id', String(36), ForeignKey('case_studies.id'), primary_key=True),
     Column('tag_id', String(36), ForeignKey('tags.id'), primary_key=True)
 )
