@@ -36,7 +36,7 @@ from sqlalchemy import (
     or_,
     text,
 )
-from sqlalchemy.orm import foreign, relationship, sessionmaker, declarative_base
+from sqlalchemy.orm import foreign, relationship, sessionmaker, declarative_base, remote
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy.sql import func
 from PIL import Image
@@ -136,11 +136,11 @@ class Blog(Base):
     user = relationship("User", back_populates="blogs", overlaps="blogs")
     comments = relationship(
         "Comment",
+        back_populates="blog",
         primaryjoin=and_(
-            text("Blog.id = Comment.content_id"),
-            text("Comment.content_type = 'blog'")
-        ),
-        remote_side=[id]  # Specify Blog.id as the primary key
+            text("Blog.id == foreign(Comment.content_id)"),
+            text("Comment.content_type == 'blog'")
+        )
     )
     media_rel = relationship(
         "Media",
@@ -188,11 +188,11 @@ class CaseStudy(Base):
     user = relationship("User", back_populates="case_studies", overlaps="case_studies")
     comments = relationship(
         "Comment",
+        back_populates="case_study",
         primaryjoin=and_(
-            text("CaseStudy.id = Comment.content_id"),
-            text("Comment.content_type = 'case_study'")
-        ),
-        remote_side=[id]  # Specify CaseStudy.id as the primary key
+            text("CaseStudy.id == foreign(Comment.content_id)"),
+            text("Comment.content_type == 'case_study'")
+        )
     )
     media_rel = relationship(
         "Media",
@@ -262,7 +262,22 @@ class Comment(Base):
     comment = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="comments")
-    # Remove blog and case_study relationships; define in Blog and CaseStudy
+    blog = relationship(
+        "Blog",
+        back_populates="comments",
+        primaryjoin=and_(
+            text("Comment.content_id == foreign(Blog.id)"),
+            text("Comment.content_type == 'blog'")
+        )
+    )
+    case_study = relationship(
+        "CaseStudy",
+        back_populates="comments",
+        primaryjoin=and_(
+            text("Comment.content_id == foreign(CaseStudy.id)"),
+            text("Comment.content_type == 'case_study'")
+        )
+    )
     __table_args__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
 
 
