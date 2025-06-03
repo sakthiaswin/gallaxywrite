@@ -42,7 +42,7 @@ st.set_page_config(
     page_title="GalaxyWrite",
     page_icon="🌌",
     layout="wide",
-    initial_side_state="expanded",
+    initial_sidebar_state="expanded",
     menu_items={
         'Get Help': 'https://github.com/gallaxywrite/support',
         'Report a bug': 'https://github.com/gallaxywrite/issues',
