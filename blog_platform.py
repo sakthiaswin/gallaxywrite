@@ -1,22 +1,25 @@
 import streamlit as st
 import bcrypt
 import streamlit_authenticator as stauth
-import sqlite3
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, JSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, JSON, Index
+from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 import uuid
 import urllib.parse
-import os
 import bleach
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from io import BytesIO
 import base64
-from typing import List, Dict, Optional
-import json
+import time  # For profiling
+
+# Lazy-load heavy libraries only when needed
+
+
+def import_pdf_libraries():
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+    from io import BytesIO
+    return letter, SimpleDocTemplate, Paragraph, Spacer, getSampleStyleSheet, BytesIO
+
 
 # Environment variable for Streamlit Cloud URL
 APP_URL = "https://gallaxywrite.streamlit.app"
@@ -30,6 +33,18 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+
+# Cache database engine and session
+@st.cache_resource
+def get_db_engine():
+    engine = create_engine('sqlite:///galaxywrite.db')
+    return engine
+
+
+@st.cache_resource
+def get_db_session(_engine):
+    Session = sessionmaker(bind=_engine)
+    return Session
 # Professional UI with Tailwind CSS
 
 
@@ -198,6 +213,7 @@ class User(Base):
     email = Column(String, nullable=False)
     profile = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (Index('idx_user_username', 'username'),)
 
 
 class Blog(Base):
@@ -213,6 +229,7 @@ class Blog(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     views = Column(Integer, default=0)
     public_link = Column(String)
+    __table_args__ = (Index('idx_blog_username', 'username'),)
 
 
 class CaseStudy(Base):
@@ -230,6 +247,7 @@ class CaseStudy(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     views = Column(Integer, default=0)
     public_link = Column(String)
+    __table_args__ = (Index('idx_case_username', 'username'),)
 
 
 class Media(Base):
@@ -240,6 +258,7 @@ class Media(Base):
     content = Column(Text, nullable=False)
     filename = Column(String, nullable=False)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (Index('idx_media_username', 'username'),)
 
 
 class Comment(Base):
@@ -250,12 +269,12 @@ class Comment(Base):
     username = Column(String, nullable=False)
     comment = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
 
 
-engine = create_engine('sqlite:///galaxywrite.db')
+engine = get_db_engine()
 Base.metadata.create_all(engine)
-Session = sessionmaker(bind=engine)
-
+Session = get_db_session(engine)
 # Data Manager
 
 
@@ -368,15 +387,26 @@ class DataManager:
         self.session.commit()
         return comment_id
 
-    def get_user_blogs(self, username):
-        return self.session.query(Blog).filter_by(username=username).all()
+    @st.cache_data(ttl=3600)
+    def get_user_blogs(_self, username):
+        start_time = time.time()
+        blogs = _self.session.query(Blog).filter_by(username=username).limit(50).all()
+        st.write(f"get_user_blogs took {time.time() - start_time:.2f} seconds")
+        return blogs
 
-    def get_user_case_studies(self, username):
-        return self.session.query(CaseStudy).filter_by(username=username).all()
+    @st.cache_data(ttl=3600)
+    def get_user_case_studies(_self, username):
+        start_time = time.time()
+        cases = _self.session.query(CaseStudy).filter_by(username=username).limit(50).all()
+        st.write(f"get_user_case_studies took {time.time() - start_time:.2f} seconds")
+        return cases
 
-    def get_all_public_content(self):
-        blogs = self.session.query(Blog).all()
-        case_studies = self.session.query(CaseStudy).all()
+    # Cache data queries
+    @st.cache_data(ttl=3600)  # Cache for 1 hour
+    def get_all_public_content(_session):
+        start_time = time.time()
+        blogs = _session.query(Blog).limit(50).all()  # Limit to 50 entries
+        case_studies = _session.query(CaseStudy).limit(50).all()
         all_content = [
             {'type': 'blog', 'author': blog.username, 'content': blog}
             for blog in blogs
@@ -384,13 +414,23 @@ class DataManager:
             {'type': 'case_study', 'author': case.username, 'content': case}
             for case in case_studies
         ]
-        return sorted(all_content, key=lambda x: x['content'].created_at, reverse=True)
+        all_content = sorted(all_content, key=lambda x: x['content'].created_at, reverse=True)
+        st.write(f"get_all_public_content took {time.time() - start_time:.2f} seconds")
+        return all_content
 
-    def get_media(self, username, file_id):
-        return self.session.query(Media).filter_by(username=username, id=file_id).first()
+    @st.cache_data(ttl=3600)
+    def get_media(_self, username, file_id):
+        start_time = time.time()
+        media = _self.session.query(Media).filter_by(username=username, id=file_id).first()
+        st.write(f"get_media took {time.time() - start_time:.2f} seconds")
+        return media
 
-    def get_comments(self, content_type, content_id):
-        return self.session.query(Comment).filter_by(content_type=content_type, content_id=content_id).all()
+    @st.cache_data(ttl=3600)
+    def get_comments(_session, content_type, content_id):
+        start_time = time.time()
+        comments = _session.query(Comment).filter_by(content_type=content_type, content_id=content_id).limit(100).all()
+        st.write(f"get_comments took {time.time() - start_time:.2f} seconds")
+        return comments
 
     def get_user_profile(self, username):
         user = self.session.query(User).filter_by(username=username).first()
@@ -408,6 +448,7 @@ dm = get_data_manager()
 
 
 def export_to_pdf(content_type, content):
+    letter, SimpleDocTemplate, Paragraph, Spacer, getSampleStyleSheet, BytesIO = import_pdf_libraries()
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
@@ -1266,6 +1307,8 @@ Mention similar products worth considering."""
 
 
 def export_content():
+    import json
+
     st.markdown("""
     <div class="header">
         <h1>📤 Export Content</h1>
@@ -1338,7 +1381,6 @@ def export_content():
                 )
 
     st.markdown("</div></div>", unsafe_allow_html=True)
-
 # Analytics Dashboard
 
 
@@ -1457,44 +1499,42 @@ def enhanced_main():
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
 
+    start_time = time.time()
     page = st.query_params.get('page', ['main'])[0]
     username = st.query_params.get('username', [''])[0]
 
     if page == 'profile' and username:
         profile_view(username)
+        st.write(f"Profile page loaded in {time.time() - start_time:.2f} seconds")
         return
 
     if not st.session_state.authenticated:
         login_page()
+        st.write(f"Login page loaded in {time.time() - start_time:.2f} seconds")
         return
 
     with st.sidebar:
-        st.markdown('<div class="sidebar-title">🌌 GalaxyWrite</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-title">🌌 Galaxy Blog</div>',
+                    unsafe_allow_html=True)
         page = st.selectbox(
             "Navigate",
-            [
-                "Main Page",
-                "Dashboard",
-                "Write Blog",
-                "Create Case Study",
-                "My Content",
-                "Templates",
-                "Analytics",
-                "Search & Filter",
-                "Profile Settings",
-                "Export Content",
-                "Logout"
-            ],
+            ["Main Page", "Write Blog", "Create Case Study", "Logout"],
             key="nav_select"
         )
         st.markdown(
-            f'<p class="text-lg font-semibold">👋 Welcome, {st.session_state.username}!</p>', unsafe_allow_html=True)
+            f'<p class="text-lg font-semibold">👋 Welcome, {st.session_state.username}!</p>',
+            unsafe_allow_html=True)
+        dm = get_data_manager()
         user_blogs = dm.get_user_blogs(st.session_state.username)
         user_cases = dm.get_user_case_studies(st.session_state.username)
-        st.markdown(f'<p>📝 <strong>Blogs:</strong> {len(user_blogs)}</p>', unsafe_allow_html=True)
-        st.markdown(f'<p>🔬 <strong>Case Studies:</strong> {len(user_cases)}</p>', unsafe_allow_html=True)
-        total_views = sum(blog.views for blog in user_blogs) + sum(case.views for case in user_cases)
-        st.markdown(f'<p>👀 <strong>Total Views:</strong> {total_views}</p>', unsafe_allow_html=True)
+        st.markdown(f'<p>📖 <strong>Blogs:</strong> {len(user_blogs)}</p>',
+                    unsafe_allow_html=True)
+        st.markdown(f'<p>📚 <strong>Case Studies:</strong> {len(user_cases)}</p>',
+                    unsafe_allow_html=True)
+        total_views = sum(blog.views for blog in user_blogs) + sum(
+            case.views for case in user_cases)
+        st.markdown(f'<p>👀 <strong>Total Views:</strong> {total_views}</p>',
+                    unsafe_allow_html=True)
         if st.button("🚪 Logout", key="logout_btn", type="primary"):
             st.session_state.authenticated = False
             st.session_state.username = None
