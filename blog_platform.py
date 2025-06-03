@@ -136,14 +136,28 @@ class Blog(Base):
     user = relationship("User", back_populates="blogs", overlaps="blogs")
     comments = relationship(
         "Comment",
+        primaryjoin=and_(
+            text("Blog.id = Comment.content_id"),
+            text("Comment.content_type = 'blog'")
+        ),
+        remote_side=[id]  # Specify Blog.id as the primary key
+    )
+    media_rel = relationship(
+        "Media",
         back_populates="blog",
         primaryjoin=and_(
-            text("Blog.id == foreign(Comment.content_id)"),
-            text("Comment.content_type == 'blog'")
+            text("Media.content_id == foreign(Blog.id)"),
+            text("Media.content_type == 'blog'")
         )
     )
-    media_rel = relationship("Media", back_populates="blog")
-    likes = relationship("Like", back_populates="blog")
+    likes = relationship(
+        "Like",
+        back_populates="blog",
+        primaryjoin=and_(
+            text("Like.content_id == foreign(Blog.id)"),
+            text("Like.content_type == 'blog'")
+        )
+    )
     tag_objects = relationship("Tag", secondary="blog_tags", back_populates="blogs")
     drafts = relationship("Draft", back_populates="blog")
     __table_args__ = (Index('idx_blog_username', 'username', 'content_type'),)
@@ -174,14 +188,28 @@ class CaseStudy(Base):
     user = relationship("User", back_populates="case_studies", overlaps="case_studies")
     comments = relationship(
         "Comment",
+        primaryjoin=and_(
+            text("CaseStudy.id = Comment.content_id"),
+            text("Comment.content_type = 'case_study'")
+        ),
+        remote_side=[id]  # Specify CaseStudy.id as the primary key
+    )
+    media_rel = relationship(
+        "Media",
         back_populates="case_study",
         primaryjoin=and_(
-            text("CaseStudy.id == foreign(Comment.content_id)"),
-            text("Comment.content_type == 'case_study'")
+            text("Media.content_id == foreign(CaseStudy.id)"),
+            text("Media.content_type == 'case_study'")
         )
     )
-    media_rel = relationship("Media", back_populates="case_study")
-    likes = relationship("Like", back_populates="case_study")
+    likes = relationship(
+        "Like",
+        back_populates="case_study",
+        primaryjoin=and_(
+            text("Like.content_id == foreign(CaseStudy.id)"),
+            text("Like.content_type == 'case_study'")
+        )
+    )
     tag_objects = relationship("Tag", secondary="case_study_tags", back_populates="case_studies")
     drafts = relationship("Draft", back_populates="case_study")
     __table_args__ = (Index('idx_case_username', 'username', 'content_type'),)
@@ -229,13 +257,12 @@ class Comment(Base):
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     content_type = Column(String(20), nullable=False)
-    content_id = Column(String(36), nullable=False)
+    content_id = Column(String(36), nullable=False)  # No ForeignKey due to polymorphism
     username = Column(String(50), nullable=False)
     comment = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="comments")
-    blog = relationship("Blog", back_populates="comments")
-    case_study = relationship("CaseStudy", back_populates="comments")
+    # Remove blog and case_study relationships; define in Blog and CaseStudy
     __table_args__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
 
 
@@ -293,7 +320,7 @@ class AnalyticsEvent(Base):
     content_type = Column(String(20))
     content_id = Column(String(36))
     timestamp = Column(DateTime, default=datetime.utcnow)
-    metadataa = Column(JSON, default={})
+    event_metadata = Column(JSON, default={})
     user = relationship("User", back_populates="analytics_events")
     __table_args__ = (Index('idx_analytics_event', 'event_type', 'timestamp'),)
 
