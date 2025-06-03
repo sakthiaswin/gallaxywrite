@@ -73,7 +73,7 @@ Base = declarative_base()
 
 
 class User(Base):
-    __table__name__ = 'users'
+    __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
     username = Column(String(50), unique=True, nullable=False)
     password = Column(String(255), nullable=False)
@@ -89,7 +89,7 @@ class User(Base):
 
 
 class Blog(Base):
-    __table__name__ = 'blogs'
+    __tablename__ = 'blogs'
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     username = Column(String(50), nullable=False)
@@ -110,7 +110,7 @@ class Blog(Base):
 
 
 class CaseStudy(Base):
-    __table__name__ = 'case_studies'
+    __tablename__ = 'case_studies'
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     username = Column(String(50), nullable=False)
@@ -133,7 +133,7 @@ class CaseStudy(Base):
 
 
 class Media(Base):
-    __table__name__ = 'media'
+    __tablename__ = 'media'
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     username = Column(String(50), nullable=False)
@@ -146,7 +146,7 @@ class Media(Base):
 
 
 class Comment(Base):
-    __table__name__ = 'comments'
+    __tablename__ = 'comments'
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     content_type = Column(String(20), nullable=False)
