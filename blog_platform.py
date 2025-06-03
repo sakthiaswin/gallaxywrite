@@ -82,11 +82,11 @@ class User(Base):
     profile = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
-    blogs = relationship("Blog", back_populates="user")
-    case_studies = relationship("CaseStudy", back_populates="user")
-    comments = relationship("Comment", back_populates="user")
-    media = relationship("Media", back_populates="user")
-    __tablename__ = (Index('idx_user_username', 'username'),)
+    blogs = relationship("Blog")  # Remove back_populates
+    case_studies = relationship("CaseStudy")  # Remove back_populates
+    comments = relationship("Comment")  # Remove back_populates
+    media = relationship("Media")  # Remove back_populates
+    __table_args__ = (Index('idx_user_username', 'username'),)
 
 
 class Blog(Base):
@@ -96,7 +96,7 @@ class Blog(Base):
     username = Column(String(50), nullable=False)
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
-    tagscznym = Column(JSON, default=[])
+    tags = Column(JSON, default=[])
     media = Column(JSON, default=[])
     font = Column(String(50), default='Inter')
     content_type = Column(String(20), default='blog')
@@ -105,14 +105,12 @@ class Blog(Base):
     views = Column(Integer, default=0)
     public_link = Column(String(255))
     is_published = Column(Boolean, default=True)
-    user = relationship("User", back_populates="blogs")
-    comments = relationship("Comment", back_populates="blog")
-    __tablename__ = (Index('idx_blog_username', 'username', 'content_type'),)
+    user = relationship("User")  # Remove back_populates
     comments = relationship(
         "Comment",
-        back_populates="blog",
         primaryjoin="and_(Blog.id == Comment.content_id, Comment.content_type == 'blog')"
-    )
+    )  # Remove back_populates
+    __table_args__ = (Index('idx_blog_username', 'username', 'content_type'),)
 
 
 class CaseStudy(Base):
@@ -133,14 +131,12 @@ class CaseStudy(Base):
     views = Column(Integer, default=0)
     public_link = Column(String(255))
     is_published = Column(Boolean, default=True)
-    user = relationship("User", back_populates="case_studies")
-    comments = relationship("Comment", back_populates="case_study")
-    __tablename__ = (Index('idx_case_username', 'username', 'content_type'),)
+    user = relationship("User")  # Remove back_populates
     comments = relationship(
         "Comment",
-        back_populates="case_study",
         primaryjoin="and_(CaseStudy.id == Comment.content_id, Comment.content_type == 'case_study')"
-    )
+    )  # Remove back_populates
+    __table_args__ = (Index('idx_case_username', 'username', 'content_type'),)
 
 
 class Media(Base):
@@ -148,12 +144,22 @@ class Media(Base):
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     username = Column(String(50), nullable=False)
+    content_type = Column(String(20))
+    content_id = Column(String(36))
     type = Column(String(20), nullable=False)
-    content = Column(String(255), nullable=False)
-    filename = Column(Text, nullable=False)
+    content = Column(Text, nullable=False)
+    filename = Column(String(255), nullable=False)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
-    user = relationship("User", back_populates="media")
-    __tablename__ = (Index('idx_media_username', 'username'),)
+    user = relationship("User")  # Remove back_populates
+    blog = relationship(
+        "Blog",
+        primaryjoin="and_(Media.content_id == Blog.id, Media.content_type == 'blog')"
+    )
+    case_study = relationship(
+        "CaseStudy",
+        primaryjoin="and_(Media.content_id == CaseStudy.id, Media.content_type == 'case_study')"
+    )
+    __table_args__ = (Index('idx_media_username', 'username'),)
 
 
 class Comment(Base):
@@ -165,17 +171,18 @@ class Comment(Base):
     username = Column(String(50), nullable=False)
     comment = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    user = relationship("User", back_populates="comments")
-    blog = relationship("Blog", back_populates="comments")
-    case_study = relationship("CaseStudy", back_populates="comments")
-    __tablename__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
-    blog = relationship("Blog", back_populates="comments")
-    case_study = relationship("CaseStudy", back_populates="comments")
+    user = relationship("User")  # Remove back_populates
+    blog = relationship("Blog")  # Remove back_populates
+    case_study = relationship("CaseStudy")  # Remove back_populates
+    __table_args__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
 
 
 engine = get_db_engine()
-for table in Base.metadata.sorted_tables:
-    table.create(engine, checkfirst=True)
+User.__table__.create(engine, checkfirst=True)
+Blog.__table__.create(engine, checkfirst=True)
+CaseStudy.__table__.create(engine, checkfirst=True)
+Media.__table__.create(engine, checkfirst=True)
+Comment.__table__.create(engine, checkfirst=True)
 Session = get_db_session(engine)
 
 # Optimized Queries
