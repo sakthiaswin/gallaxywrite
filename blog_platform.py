@@ -174,7 +174,8 @@ class Comment(Base):
 
 
 engine = get_db_engine()
-Base.metadata.create_all(engine)
+for table in Base.metadata.sorted_tables:
+    table.create(engine, checkfirst=True)
 Session = get_db_session(engine)
 
 # Optimized Queries
