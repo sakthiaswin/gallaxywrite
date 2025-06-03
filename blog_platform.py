@@ -1,298 +1,253 @@
 import streamlit as st
 import bcrypt
-import streamlit_authenticator as stauth
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, JSON, Index
+import streamlit_authenticator as stauth  # type: ignore
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime,
+    JSON,
+    Boolean,
+    ForeignKey,
+    relationship,
+    Index,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import urllib.parse
-import bleach
+import re
 import base64
-import time  # For profiling
-
-# Lazy-load heavy libraries only when needed
+import time
+import json
+from typing import List, Dict, Optional
+import hashlib
+import bleach
+# Lazy-load heavy libraries
 
 
 def import_pdf_libraries():
     from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
     from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
     from io import BytesIO
-    return letter, SimpleDocTemplate, Paragraph, Spacer, getSampleStyleSheet, BytesIO
+    return letter, SimpleDocTemplate, Paragraph, Spacer, Image, getSampleStyleSheet, BytesIO  # Hardcoded APP_URL
 
 
-# Environment variable for Streamlit Cloud URL
-APP_URL = "https://gallaxywrite.streamlit.app"
-
+APP_URL = "https://gallaxywrite.streamlit.app/"
 
 # Page configuration
 st.set_page_config(
     page_title="GalaxyWrite",
     page_icon="🌌",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_side_state="expanded",
+    menu_items={
+        'Get Help': 'https://github.com/gallaxywrite/support',
+        'Report a bug': 'https://github.com/gallaxywrite/issues',
+        'About': "GalaxyWrite - Your Cosmic Blogging Platform"
+    }
 )
+# Cache database engine and session factory
 
 
-# Cache database engine and session
 @st.cache_resource
 def get_db_engine():
-    engine = create_engine('sqlite:///galaxywrite.db')
+    start_time = time.time()
+    engine = create_engine('sqlite:///galaxywrite.db', echo=False)
+    st.write(f"get_db_engine took{time.time() - start_time:.2f} seconds")
     return engine
 
 
 @st.cache_resource
 def get_db_session(_engine):
+    start_time = time.time()
     Session = sessionmaker(bind=_engine)
+    st.write(f"get_db_session took{time.time() - start_time:.2f} seconds")
     return Session
-# Professional UI with Tailwind CSS
 
 
-def load_css():
-    st.markdown("""
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@400;700&display=swap');
-        
-        body {
-            font-family: 'Inter', sans-serif;
-            background: linear-gradient(180deg, #0a0a23 0%, #1a1a3d 100%);
-            color: #e0e0ff;
-        }
-
-        .header {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            background: rgba(10, 10, 35, 0.95);
-            backdrop-filter: blur(15px);
-            z-index: 50;
-            padding: 1rem 2rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .header h1 {
-            font-family: 'Playfair Display', serif;
-            font-size: 2.25rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #5c5cff, #d400d4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            text-align: center;
-        }
-
-        .container {
-            max-width: 1280px;
-            margin: 0 auto;
-            padding: 6rem 1rem 2rem;
-        }
-
-        .card {
-            background: rgba(20, 20, 50, 0.95);
-            border-radius: 1rem;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 15px 30px rgba(92, 92, 255, 0.3);
-        }
-
-        .case-card {
-            background: linear-gradient(135deg, #5c5cff, #d400d4);
-            color: white;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #5c5cff, #d400d4);
-            color: white;
-            padding: 0.75rem 1.5rem;
-            border-radius: 0.75rem;
-            font-weight: 600;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(92, 92, 255, 0.4);
-        }
-
-        .input-field {
-            border: 2px solid #2a2a5e;
-            border-radius: 0.75rem;
-            padding: 0.75rem;
-            background: rgba(255, 255, 255, 0.9);
-            color: #000;
-            transition: border-color 0.3s ease;
-        }
-
-        .input-field:focus {
-            border-color: #5c5cff;
-            box-shadow: 0 0 0 3px rgba(92, 92, 255, 0.2);
-        }
-
-        .textarea-field {
-            border: 2px solid #2a2a5e;
-            border-radius: 0.75rem;
-            padding: 0.75rem;
-            background: rgba(255, 255, 255, 0.9);
-            color: #000;
-            font-family: 'Inter', sans-serif;
-            line-height: 1.6;
-        }
-
-        .sidebar {
-            background: linear-gradient(180deg, #0a0a23, #1a1a3d);
-            border-right: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 1.5rem;
-        }
-
-        .sidebar-title {
-            font-family: 'Playfair Display', serif;
-            font-size: 1.75rem;
-            font-weight: 700;
-            color: #e0e0ff;
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-
-        .tag {
-            display: inline-block;
-            background: linear-gradient(135deg, #5c5cff, #d400d4);
-            color: white;
-            padding: 0.25rem 0.75rem;
-            border-radius: 1rem;
-            font-size: 0.85rem;
-            margin-right: 0.5rem;
-            margin-bottom: 0.5rem;
-        }
-
-        .media-preview {
-            max-width: 100%;
-            border-radius: 0.75rem;
-            margin: 1rem 0;
-            box-shadow: 0 4px 15px rgba(92, 92, 255, 0.3);
-        }
-
-        .comment-section {
-            background: rgba(20, 20, 50, 0.95);
-            border-radius: 0.75rem;
-            padding: 1rem;
-            margin-top: 1rem;
-        }
-
-        .hero {
-            background: linear-gradient(135deg, rgba(92, 92, 255, 0.2), rgba(212, 0, 212, 0.2));
-            border-radius: 1rem;
-            padding: 3rem;
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-
-        #MainMenu, footer, header {
-            visibility: hidden;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-
-
-# Database Setup
+# Database setup
 Base = declarative_base()
 
 
 class User(Base):
-    __tablename__ = 'users'
+    __table__name__ = 'users'
     id = Column(Integer, primary_key=True)
-    username = Column(String, unique=True, nullable=False)
-    password = Column(String, nullable=False)
-    email = Column(String, nullable=False)
+    username = Column(String(50), unique=True, nullable=False)
+    password = Column(String(255), nullable=False)
+    email = Column(String(100), nullable=False)
     profile = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+    blogs = relationship("Blog", back_populates="user")
+    case_studies = relationship("CaseStudy", back_populates="user")
+    comments = relationship("Comment", back_populates="user")
+    media = relationship("Media", back_populates="user")
     __table_args__ = (Index('idx_user_username', 'username'),)
 
 
 class Blog(Base):
-    __tablename__ = 'blogs'
-    id = Column(String, primary_key=True)
-    username = Column(String, nullable=False)
-    title = Column(String, nullable=False)
+    __table__name__ = 'blogs'
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    username = Column(String(50), nullable=False)
+    title = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
-    tags = Column(JSON, default=[])
+    tagscznym = Column(JSON, default=[])
     media = Column(JSON, default=[])
-    font = Column(String, default='Inter')
+    font = Column(String(50), default='Inter')
+    content_type = Column(String(20), default='blog')
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
     views = Column(Integer, default=0)
-    public_link = Column(String)
-    __table_args__ = (Index('idx_blog_username', 'username'),)
+    public_link = Column(String(255))
+    is_published = Column(Boolean, default=True)
+    user = relationship("User", back_populates="blogs")
+    comments = relationship("Comment", back_populates="blog")
+    __table_args__ = (Index('idx_blog_username', 'username', 'content_type'))
 
 
 class CaseStudy(Base):
-    __tablename__ = 'case_studies'
-    id = Column(String, primary_key=True)
-    username = Column(String, nullable=False)
-    title = Column(String, nullable=False)
+    __table__name__ = 'case_studies'
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    username = Column(String(50), nullable=False)
+    title = Column(String(255), nullable=False)
     problem = Column(Text, nullable=False)
     solution = Column(Text, nullable=False)
     results = Column(Text, nullable=False)
     tags = Column(JSON, default=[])
     media = Column(JSON, default=[])
-    font = Column(String, default='Inter')
+    font = Column(String(50), default='Inter')
+    content_type = Column(String(20), default='case_study')
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
     views = Column(Integer, default=0)
-    public_link = Column(String)
-    __table_args__ = (Index('idx_case_username', 'username'),)
+    public_link = Column(String(255))
+    is_published = Column(Boolean, default=True)
+    user = relationship("User", back_populates="case_studies")
+    comments = relationship("Comment", back_populates="case_study")
+    __table_args__ = (Index('idx_case_username', 'username', 'content_type'),)
 
 
 class Media(Base):
-    __tablename__ = 'media'
-    id = Column(String, primary_key=True)
-    username = Column(String, nullable=False)
-    type = Column(String, nullable=False)
-    content = Column(Text, nullable=False)
-    filename = Column(String, nullable=False)
+    __table__name__ = 'media'
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    username = Column(String(50), nullable=False)
+    type = Column(String(20), nullable=False)
+    content = Column(String(255), nullable=False)
+    filename = Column(Text, nullable=False)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="media")
     __table_args__ = (Index('idx_media_username', 'username'),)
 
 
 class Comment(Base):
-    __tablename__ = 'comments'
-    id = Column(String, primary_key=True)
-    content_type = Column(String, nullable=False)
-    content_id = Column(String, nullable=False)
-    username = Column(String, nullable=False)
+    __table__name__ = 'comments'
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    content_type = Column(String(20), nullable=False)
+    content_id = Column(String(36), nullable=False)
+    username = Column(String(50), nullable=False)
     comment = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="comments")
+    blog = relationship("Blog", back_populates="comments")
+    case_study = relationship("CaseStudy", back_populates="comments")
     __table_args__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
 
 
 engine = get_db_engine()
 Base.metadata.create_all(engine)
 Session = get_db_session(engine)
+
+# Optimized Queries
+
+
+@st.cache_data(ttl=3600)
+def get_all_public_content():
+    start_time = time.time()
+    with Session() as session:
+        blogs = session.query(Blog).filter_by(is_published=True).limit(30).all()
+        case_studies = session.query(CaseStudy).filter_by(is_published=True).limit(30).all()
+        all_content = [
+            {'type': 'blog', 'author': blog.username, 'content': blog}
+            for blog in blogs
+        ] + [
+            {'type': 'case_study', 'author': case.username, 'content': case}
+            for case in case_studies
+        ]
+        all_content = sorted(all_content, key=lambda x: x['content'].created_at, reverse=True)
+    st.write(f"get_all_public_content took {time.time() - start_time:.2f} seconds")
+    return all_content
+
+
+@st.cache_data(ttl=3600)
+def get_comments(_content_type: str, content_id: str):
+    start_time = time.time()
+    with Session() as session:
+        comments = session.query(Comment).filter_by(content_type=_content_type, content_id=content_id).limit(10).all()
+    st.write(f"get_comments took {time.time() - start_time:.2f} seconds")
+    return comments
+
+
+@st.cache_data(ttl=3600)
+def search_content(query: str, filters: Dict = None) -> List[Dict]:
+    start_time = time.time()
+    with Session() as session:
+        search_pattern = f"%{query}%"
+        blog_query = session.query(Blog).filter(Blog.title.ilike(search_pattern) | Blog.content.ilike(search_pattern))
+        case_query = session.query(CaseStudy).filter(CaseStudy.title.ilike(
+            search_pattern) | CaseStudy.problem.ilike(search_pattern))
+        if filters:
+            if filters.get('content_type') == 'blog':
+                case_query = case_query.filter(False)
+            elif filters.get('content_type') == 'case_study':
+                blog_query = blog_query.filter(False)
+            if filters.get('author'):
+                blog_query = blog_query.filter(Blog.username == filters['author'])
+                case_query = case_query.filter(CaseStudy.username == filters['author'])
+            if filters.get('tags'):
+                blog_query = blog_query.filter(Blog.tags.contains(filters['tags']))
+                case_query = case_query.filter(CaseStudy.tags.contains(filters['tags']))
+        blogs = blog_query.limit(30).all()
+        case_studies = case_query.limit(30).all()
+        results = [
+            {'type': 'blog', 'author': blog.username, 'content': blog}
+            for blog in blogs
+        ] + [
+            {'type': 'case_study', 'author': case.username, 'content': case}
+            for case in case_studies
+        ]
+        results = sorted(results, key=lambda x: x['content'].created_at, reverse=True)
+    st.write(f"search_content took {time.time() - start_time:.2f} seconds")
+    return results
+
 # Data Manager
 
 
 class DataManager:
     def __init__(self):
-        self.session_factory = Session  # Store the sessionmaker factory
+        self.session_factory = Session
 
-    def hash_password(self, password):
+    def hash_password(self, password: str) -> str:
         return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-    def check_password(self, password, hashed):
+    def check_password(self, password: str, hashed: str) -> bool:
         return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
-    def register_user(self, username, password, email):
+    def register_user(self, username: str, password: str, email: str) -> bool:
         username = bleach.clean(username)
         email = bleach.clean(email)
         with self.session_factory() as session:
             if session.query(User).filter_by(username=username).first():
+                return False
+            if session.query(User).filter_by(email=email).first():
                 return False
             user = User(
                 username=username,
@@ -302,52 +257,64 @@ class DataManager:
                     'bio': '',
                     'avatar': '',
                     'social_links': {},
-                    'preferred_font': 'Inter'
+                    'preferred_font': 'Inter',
+                    'theme': 'light',
+                    'notifications': {'email_comments': True, 'email_follows': False}
                 }
             )
             session.add(user)
             session.commit()
         return True
 
-    def authenticate_user(self, username, password):
+    def authenticate_user(self, username: str, password: str) -> bool:
         with self.session_factory() as session:
-            user = session.query(User).filter_by(username=username).first()
+            user = session.query(User).filter_by(username=username, is_active=True).first()
             if user and self.check_password(password, user.password):
                 return True
         return False
 
-    def save_blog(self, username, title, content, tags="", media=None, font='Inter'):
+    def save_blog(self, username: str, title: str, content: str, tags: str = "", media: Optional[List[str]] = None, font: str = 'Inter', content_type: str = 'blog', is_published: bool = True) -> str:
         title = bleach.clean(title)
         content = bleach.clean(content)
         tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
         blog_id = str(uuid.uuid4())
-        public_link = f"{APP_URL}/blog/{urllib.parse.quote(username)}/{blog_id}"
+        public_link = f"{APP_URL}/content/blog/{urllib.parse.quote(username)}/{blog_id}"
         with self.session_factory() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                raise ValueError("User not found")
             blog = Blog(
                 id=blog_id,
+                user_id=user.id,
                 username=username,
                 title=title,
                 content=content,
                 tags=tags,
                 media=media or [],
                 font=font,
-                public_link=public_link
+                content_type=content_type,
+                public_link=public_link,
+                is_published=is_published
             )
             session.add(blog)
             session.commit()
         return blog_id
 
-    def save_case_study(self, username, title, problem, solution, results, tags="", media=None, font='Inter'):
+    def save_case_study(self, username: str, title: str, problem: str, solution: str, results: str, tags: str = "", media: Optional[List[str]] = None, font: str = 'Inter', is_published: bool = True) -> str:
         title = bleach.clean(title)
         problem = bleach.clean(problem)
         solution = bleach.clean(solution)
         results = bleach.clean(results)
         tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
         case_id = str(uuid.uuid4())
-        public_link = f"{APP_URL}/case_study/{urllib.parse.quote(username)}/{case_id}"
+        public_link = f"{APP_URL}/content/case_study/{urllib.parse.quote(username)}/{case_id}"
         with self.session_factory() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                raise ValueError("User not found")
             case_study = CaseStudy(
                 id=case_id,
+                user_id=user.id,
                 username=username,
                 title=title,
                 problem=problem,
@@ -356,19 +323,25 @@ class DataManager:
                 tags=tags,
                 media=media or [],
                 font=font,
-                public_link=public_link
+                content_type='case_study',
+                public_link=public_link,
+                is_published=is_published
             )
             session.add(case_study)
             session.commit()
         return case_id
 
-    def save_media(self, username, file):
+    def save_media(self, username: str, file) -> str:
         file_type = 'image' if file.type.startswith('image') else 'video' if file.type.startswith('video') else 'gif'
         file_content = base64.b64encode(file.read()).decode('utf-8')
         file_id = str(uuid.uuid4())
         with self.session_factory() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                raise ValueError("User not found")
             media = Media(
                 id=file_id,
+                user_id=user.id,
                 username=username,
                 type=file_type,
                 content=file_content,
@@ -378,12 +351,16 @@ class DataManager:
             session.commit()
         return file_id
 
-    def save_comment(self, content_type, content_id, username, comment):
+    def save_comment(self, content_type: str, content_id: str, username: str, comment: str) -> str:
         comment = bleach.clean(comment)
         comment_id = str(uuid.uuid4())
         with self.session_factory() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                raise ValueError("User not found")
             comment_obj = Comment(
                 id=comment_id,
+                user_id=user.id,
                 content_type=content_type,
                 content_id=content_id,
                 username=username,
@@ -393,8 +370,44 @@ class DataManager:
             session.commit()
         return comment_id
 
+    def update_profile(self, username: str, profile_data: Dict) -> bool:
+        with self.session_factory() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                return False
+            user.profile = {**user.profile, **profile_data}
+            session.commit()
+        return True
+
+    def increment_views(self, content_type: str, content_id: str):
+        with self.session_factory() as session:
+            if content_type == 'blog':
+                content = session.query(Blog).filter_by(id=content_id).first()
+            else:
+                content = session.query(CaseStudy).filter_by(id=content_id).first()
+            if content:
+                content.views += 1
+                session.commit()
+
+    def get_analytics(self, username: str) -> Dict:
+        with self.session_factory() as session:
+            blogs = session.query(Blog).filter_by(username=username).all()
+            case_studies = session.query(CaseStudy).filter_by(username=username).all()
+            total_views = sum(blog.views for blog in blogs) + sum(case.views for case in case_studies)
+            total_comments = session.query(Comment).filter(
+                Comment.content_id.in_([b.id for b in blogs] + [c.id for c in case_studies])
+            ).count()
+            return {
+                'total_blogs': len(blogs),
+                'total_case_studies': len(case_studies),
+                'total_views': total_views,
+                'total_comments': total_comments,
+                'recent_blogs': sorted(blogs, key=lambda x: x.created_at, reverse=True)[:5],
+                'recent_case_studies': sorted(case_studies, key=lambda x: x.created_at, reverse=True)[:5]
+            }
+
     @st.cache_data(ttl=3600)
-    def get_user_blogs(_self, username):
+    def get_user_blogs(_self, username: str):
         start_time = time.time()
         with _self.session_factory() as session:
             blogs = session.query(Blog).filter_by(username=username).limit(30).all()
@@ -402,33 +415,15 @@ class DataManager:
         return blogs
 
     @st.cache_data(ttl=3600)
-    def get_user_case_studies(_self, username):
+    def get_user_case_studies(_self, username: str):
         start_time = time.time()
         with _self.session_factory() as session:
             cases = session.query(CaseStudy).filter_by(username=username).limit(30).all()
         st.write(f"get_user_case_studies took {time.time() - start_time:.2f} seconds")
         return cases
-    # Cache data queries
-
-    @st.cache_data(ttl=3600)  # Cache for 1 hour
-    def get_all_public_content():
-        start_time = time.time()
-        with Session() as session:
-            blogs = session.query(Blog).limit(30).all()  # Changed to 30
-            case_studies = session.query(CaseStudy).limit(30).all()  # Changed to 30
-            all_content = [
-                {'type': 'blog', 'author': blog.username, 'content': blog}
-                for blog in blogs
-            ] + [
-                {'type': 'case_study', 'author': case.username, 'content': case}
-                for case in case_studies
-            ]
-            all_content = sorted(all_content, key=lambda x: x['content'].created_at, reverse=True)
-        st.write(f"get_all_public_content took {time.time() - start_time:.2f} seconds")
-        return all_content
 
     @st.cache_data(ttl=3600)
-    def get_media(_self, username, file_id):
+    def get_media(_self, username: str, file_id: str):
         start_time = time.time()
         with _self.session_factory() as session:
             media = session.query(Media).filter_by(username=username, id=file_id).first()
@@ -436,35 +431,19 @@ class DataManager:
         return media
 
     @st.cache_data(ttl=3600)
-    def get_user_profile(_self, username):
+    def get_user_profile(_self, username: str):
         start_time = time.time()
         with _self.session_factory() as session:
             user = session.query(User).filter_by(username=username).first()
         st.write(f"get_user_profile took {time.time() - start_time:.2f} seconds")
         return user.profile if user else {}
 
-    @st.cache_data(ttl=3600)
-    def get_comments(_self, content_type, content_id):
-        start_time = time.time()
-        with _self.session_factory() as session:
-            comments = session.query(Comment).filter_by(content_type=content_type,
-                                                        content_id=content_id).limit(30).all()  # Changed to 30
-        st.write(f"get_comments took {time.time() - start_time:.2f} seconds")
-        return comments
+# Utility Functions
 
 
-@st.cache_resource
-def get_data_manager():
-    return DataManager()
-
-
-dm = get_data_manager()
-
-# PDF Export
-
-
-def export_to_pdf(content_type, content):
-    letter, SimpleDocTemplate, Paragraph, Spacer, getSampleStyleSheet, BytesIO = import_pdf_libraries()
+def export_to_pdf(content_type: str, content, media: Optional[List] = None):
+    letter, SimpleDocTemplate, Paragraph, Spacer, Image, getSampleStyleSheet, BytesIO = import_pdf_libraries()
+    from reportlab.lib.units import inch
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
@@ -482,20 +461,130 @@ def export_to_pdf(content_type, content):
         story.append(Spacer(1, 12))
         story.append(Paragraph(f"<b>Results:</b> {bleach.clean(content.results)}", styles['BodyText']))
 
+    if media:
+        for media_item in media:
+            if media_item.type == 'image':
+                img_data = base64.b64decode(media_item.content)
+                img_buffer = BytesIO(img_data)
+                story.append(Image(img_buffer, width=2 * inch, height=2 * inch))
+                story.append(Spacer(1, 12))
+
     doc.build(story)
     return buffer.getvalue()
 
-# Authentication
+
+def validate_email(email: str) -> bool:
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email))
+
+
+def generate_gravatar_url(email: str) -> str:
+    email_hash = hashlib.md5(email.lower().encode('utf-8')).hexdigest()
+    return f"https://www.gravatar.com/avatar/{email_hash}?s=200&d=identicon"
+
+# CSS Styling
+
+
+def load_css():
+    st.markdown("""
+    <style>
+        .header {
+            text-align: center;
+            padding: 2rem 0;
+            background: linear-gradient(90deg, #1e3c72, #2a5298);
+            color: white;
+            border-radius: 10px;
+            margin-bottom: 2rem;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+        .card {
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+        }
+        .sidebar-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #1e3c72;
+            margin-bottom: 1rem;
+        }
+        .content-card {
+            background: #f9fafb;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            border-left: 4px solid #2a5298;
+        }
+        .comment-card {
+            background: #f1f5f9;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
+        }
+        .template-card {
+            background: #e0f2fe;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+        .analytics-box {
+            background: #e0f2fe;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+        .text-lg {
+            font-size: 1.125rem;
+        }
+        .text-center {
+            text-align: center;
+        }
+        .text-gray-400 {
+            color: #9ca3af;
+        }
+        .py-4 {
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+        }
+        .max-w-md {
+            max-width: 28rem;
+        }
+        .mx-auto {
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .mb-6 {
+            margin-bottom: 1.5rem;
+        }
+        .font-semibold {
+            font-weight: 600;
+        }
+        .avatar {
+            border-radius: 50%;
+            width: 120px;
+            height: 120px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Pages
 
 
 def login_page():
     st.markdown("""
     <div class="header">
         <h1>🌌 GalaxyWrite</h1>
+        <p>Your Cosmic Blogging Platform</p>
     </div>
     <div class="container">
         <div class="card max-w-md mx-auto">
-            <h2 class="text-2xl font-semibold mb-6 text-center">Welcome to GalaxyWrite</h2>
+            <h2 class="text-2xl font-semibold mb-6 text-center">Welcome Back</h2>
     """, unsafe_allow_html=True)
 
     credentials = {
@@ -505,7 +594,7 @@ def login_page():
                 'password': user.password,
                 'email': user.email
             }
-            for user in dm.session_factory.query(User).all()
+            for user in Session().query(User).all()
         }
     }
     authenticator = stauth.Authenticate(
@@ -515,20 +604,24 @@ def login_page():
         cookie_expiry_days=30
     )
 
-    # Reverted login call to use location parameter
     name, authentication_status, username = authenticator.login('Login', 'main')
 
     if authentication_status:
         st.session_state.authenticated = True
         st.session_state.username = username
+        with Session() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if user:
+                st.session_state.user_password = user.password
         st.success("Login successful!")
         st.rerun()
     elif authentication_status == False:
-        st.error("Invalid credentials!")
+        st.error("Invalid username or password!")
     elif authentication_status == None:
         st.warning("Please enter your username and password")
 
-    with st.expander("Create an Account", expanded=False):
+    with st.expander("Create a New Account", expanded=False):
+        st.markdown("<h3 class='text-lg font-semibold'>Sign Up</h3>", unsafe_allow_html=True)
         new_username = st.text_input("Username", key="signup_username", placeholder="Choose a unique username")
         new_email = st.text_input("Email", key="signup_email", placeholder="your.email@example.com")
         new_password = st.text_input("Password", type="password", key="signup_password",
@@ -542,7 +635,7 @@ def login_page():
                 st.error("Passwords don't match!")
             elif len(new_password) < 8:
                 st.error("Password must be at least 8 characters!")
-            elif not new_email or '@' not in new_email:
+            elif not validate_email(new_email):
                 st.error("Invalid email format!")
             elif dm.register_user(new_username, new_password, new_email):
                 st.success("Account created successfully! Please login.")
@@ -552,961 +645,701 @@ def login_page():
                     'email': new_email
                 }
             else:
-                st.error("Username already exists!")
+                st.error("Username or email already exists!")
 
     st.markdown("</div></div>", unsafe_allow_html=True)
-# Main Page
-
-
-def main_page():
-    st.markdown("""
-    <div class="header">
-        <h1>🌌 GalaxyWrite Community</h1>
-    </div>
-    <div class="container">
-        <div class="hero">
-            <h2 class="text-3xl font-bold mb-4">Connect Through Cosmic Insights</h2>
-            <p class="text-lg text-gray-300 mb-6">
-                Discover a universe of blogs and case studies shared by our vibrant community. 
-                Share your story, comment, and connect with creators worldwide.
-            </p>
-            <a href="?page=Write Blog" class="btn-primary">Start Writing</a>
-        </div>
-    """, unsafe_allow_html=True)
-
-    col1, col2, col3 = st.columns([2, 1, 2])
-    with col1:
-        content_filter = st.selectbox("Content Type", ["All", "Blogs", "Case Studies"], key="content_filter")
-    with col2:
-        sort_by = st.selectbox("Sort By", ["Recent", "Most Viewed"], key="sort_by")
-    with col3:
-        search_term = st.text_input("Search", placeholder="Search titles, content...", key="search_main")
-
-    all_content = dm.get_all_public_content()
-    filtered_content = all_content
-
-    if content_filter == "Blogs":
-        filtered_content = [c for c in all_content if c['type'] == 'blog']
-    elif content_filter == "Case Studies":
-        filtered_content = [c for c in all_content if c['type'] == 'case_study']
-
-    if search_term:
-        filtered_content = [
-            c for c in filtered_content
-            if search_term.lower() in c['content'].title.lower() or
-            search_term.lower() in (
-                c['content'].content if c['type'] == 'blog'
-                else f"{c['content'].problem} {c['content'].solution} {c['content'].results}"
-            ).lower()
-        ]
-
-    if sort_by == "Most Viewed":
-        filtered_content = sorted(filtered_content, key=lambda x: x['content'].views, reverse=True)
-
-    st.markdown(
-        f'<p class="text-lg font-semibold">{len(filtered_content)} Cosmic Creations</p>', unsafe_allow_html=True)
-
-    for item in filtered_content:
-        content = item['content']
-        rendered_content = content.content[:300] if item['type'] == 'blog' else content.problem[:300]
-        for media_id in content.media:
-            media = dm.get_media(item['author'], media_id)
-            if media:
-                if media.type in ['image', 'gif']:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})",
-                        f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">'
-                    )
-                else:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})",
-                        f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>'
-                    )
-        card_class = "card" if item['type'] == 'blog' else "card case-card"
-        st.markdown(f'''
-        <div class="{card_class}">
-            <h3 class="text-xl font-semibold">{'📝' if item['type'] == 'blog' else '🔬'} {content.title}</h3>
-            <p class="text-sm text-gray-400">
-                By <a href="{APP_URL}/?page=profile&username={urllib.parse.quote(item['author'])}" class="text-blue-300 hover:underline">{item['author']}</a> | 
-                {content.created_at.strftime('%Y-%m-%d')} | Views: {content.views}
-            </p>
-            <p class="text-gray-200 mt-2">{rendered_content}...</p>
-            <div class="mt-2">
-                {' '.join([f'<span class="tag">{tag}</span>' for tag in content.tags])}
-            </div>
-            <a href="{content.public_link}" class="text-blue-300 hover:underline mt-2 inline-block">Read More</a>
-        </div>
-        ''', unsafe_allow_html=True)
-
-        with st.expander("Comments"):
-            comments = dm.get_comments(item['type'], content.id)
-            for comment in comments:
-                st.markdown(f'''
-                <div class="comment-section">
-                    <p><strong>{comment.username}</strong> ({comment.created_at.strftime('%Y-%m-%d %H:%M')}): {comment.comment}</p>
-                </div>
-                ''', unsafe_allow_html=True)
-
-            if st.session_state.get('authenticated', False):
-                comment_text = st.text_area(
-                    f"Add a comment to {content.title}",
-                    key=f"comment_{item['type']}_{content.id}",
-                    placeholder="Share your thoughts..."
-                )
-                if st.button("Post Comment", key=f"post_comment_{item['type']}_{content.id}", type="primary"):
-                    if comment_text:
-                        dm.save_comment(item['type'], content.id, st.session_state.username, comment_text)
-                        st.success("Comment posted!")
-                        st.rerun()
-                    else:
-                        st.error("Comment cannot be empty!")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# Dashboard
 
 
 def dashboard():
     st.markdown("""
     <div class="header">
-        <h1>🌌 GalaxyWrite Dashboard</h1>
+        <h1>📊 Dashboard</h1>
+        <p>Your personalized content hub</p>
     </div>
     <div class="container">
     """, unsafe_allow_html=True)
 
-    user_blogs = dm.get_user_blogs(st.session_state.username)
-    user_case_studies = dm.get_user_case_studies(st.session_state.username)
-
+    st.subheader("Quick Actions")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown(f'''
-        <div class="card text-center">
-            <h3 class="text-2xl font-bold text-blue-400">{len(user_blogs)}</h3>
-            <p class="text-gray-400">Blog Posts</p>
-        </div>
-        ''', unsafe_allow_html=True)
+        if st.button("Write New Blog", key="quick_blog"):
+            st.query_params.page = "Write Blog"
+            st.rerun()
     with col2:
-        st.markdown(f'''
-        <div class="card text-center">
-            <h3 class="text-2xl font-bold text-blue-400">{len(user_case_studies)}</h3>
-            <p class="text-gray-400">Case Studies</p>
-        </div>
-        ''', unsafe_allow_html=True)
+        if st.button("Create Case Study", key="quick_case"):
+            st.query_params.page = "Create Case Study"
+            st.rerun()
     with col3:
-        total_views = sum(blog.views for blog in user_blogs) + sum(case.views for case in user_case_studies)
-        st.markdown(f'''
-        <div class="card text-center">
-            <h3 class="text-2xl font-bold text-blue-400">{total_views}</h3>
-            <p class="text-gray-400">Total Views</p>
-        </div>
-        ''', unsafe_allow_html=True)
+        if st.button("View Analytics", key="quick_analytics"):
+            st.query_params.page = "Analytics"
+            st.rerun()
 
-    st.markdown('<h2 class="text-xl font-semibold mt-8">Your Recent Content</h2>', unsafe_allow_html=True)
-    recent_blogs = sorted(user_blogs, key=lambda x: x.created_at, reverse=True)[:3]
-    recent_cases = sorted(user_case_studies, key=lambda x: x.created_at, reverse=True)[:3]
+    st.subheader("Recent Content")
+    blogs = dm.get_user_blogs(st.session_state.username)[:5]
+    case_studies = dm.get_user_case_studies(st.session_state.username)[:5]
+    recent_content = sorted(
+        [{'type': 'blog', 'content': b} for b in blogs] + [{'type': 'case_study', 'content': c} for c in case_studies],
+        key=lambda x: x['content'].created_at,
+        reverse=True
+    )[:5]
+    for item in recent_content:
+        content = item['content']
+        st.markdown('<div class="content-card">', unsafe_allow_html=True)
+        st.markdown(f"""
+        <h4>{bleach.clean(content.title)}</h4>
+        <p><b>{item['type'].title()}</b> | Created: {content.created_at.strftime('%B %d, %Y')} | Views: {content.views}</p>
+        """, unsafe_allow_html=True)
+        st.link_button("View", content.public_link)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    if recent_blogs:
-        st.markdown('<p class="text-lg font-medium">Recent Blogs</p>', unsafe_allow_html=True)
-        for blog in recent_blogs:
-            st.markdown(f'''
-            <div class="card">
-                <h3 class="text-lg font-semibold">{blog.title}</h3>
-                <p class="text-sm text-gray-400">Created: {blog.created_at.strftime('%Y-%m-%d')} | Views: {blog.views}</p>
-                <p class="text-gray-200">{blog.content[:200]}...</p>
-            </div>
-            ''', unsafe_allow_html=True)
-
-    if recent_cases:
-        st.markdown('<p class="text-lg font-medium">Recent Case Studies</p>', unsafe_allow_html=True)
-        for case in recent_cases:
-            st.markdown(f'''
-            <div class="card case-card">
-                <h3 class="text-lg font-semibold">{case.title}</h3>
-                <p class="text-sm text-gray-200">Created: {case.created_at.strftime('%Y-%m-%d')} | Views: {case.views}</p>
-                <p class="text-gray-100">{case.problem[:200]}...</p>
-            </div>
-            ''', unsafe_allow_html=True)
+    st.subheader("Notifications")
+    profile = dm.get_user_profile(st.session_state.username)
+    if profile.get('notifications', {}).get('email_comments'):
+        comments = []
+        with Session() as session:
+            user_content_ids = [b.id for b in blogs] + [c.id for c in case_studies]
+            comments = session.query(Comment).filter(Comment.content_id.in_(user_content_ids)
+                                                     ).order_by(Comment.created_at.desc()).limit(5).all()
+        for comment in comments:
+            st.markdown(
+                f"<p><b>{bleach.clean(comment.username)}</b> commented on your content: {bleach.clean(comment.comment[:50])}...</p>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Blog Editor
+
+def main_page():
+    st.markdown("""
+    <div class="header">
+        <h1>🌌 Explore GalaxyWrite</h1>
+        <p>Discover stories, case studies, and ideas from our cosmic community</p>
+    </div>
+    <div class="container">
+    """, unsafe_allow_html=True)
+
+    all_content = get_all_public_content()
+    for content in all_content:
+        with st.container():
+            st.markdown('<div class="content-card">', unsafe_allow_html=True)
+            if content['type'] == 'blog':
+                st.markdown(f"""
+                <h3>{bleach.clean(content['content'].title)}</h3>
+                <p><strong>By {bleach.clean(content['author'])}</strong> | {content['content'].created_at.strftime('%B %d, %Y')} | 👀 {content['content'].views} views</p>
+                <p>{bleach.clean(content['content'].content[:200])}...</p>
+                """, unsafe_allow_html=True)
+                st.link_button("Read More", content['content'].public_link)
+                if content['content'].media:
+                    media = dm.get_media(content['author'], content['content'].media[0])
+                    if media and media.type == 'image':
+                        st.image(base64.b64decode(media.content), width=300)
+            else:
+                st.markdown(f"""
+                <h3>{bleach.clean(content['content'].title)}</h3>
+                <p><strong>By {bleach.clean(content['author'])}</strong> | {content['content'].created_at.strftime('%B %d, %Y')} | 👀 {content['content'].views} views</p>
+                <p><strong>Problem:</strong> {bleach.clean(content['content'].problem[:100])}...</p>
+                """, unsafe_allow_html=True)
+                st.link_button("Read More", content['content'].public_link)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def blog_editor():
     st.markdown("""
     <div class="header">
-        <h1>✍️ Blog Editor</h1>
+        <h1>✍️ Write a Blog</h1>
+        <p>Share your thoughts with the universe</p>
     </div>
     <div class="container">
-        <div class="card">
     """, unsafe_allow_html=True)
 
-    title = st.text_input("Blog Title", value=st.session_state.get('template_title', ''),
-                          placeholder="Enter an engaging title...", key="blog_title")
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        tags = st.text_input("Tags (comma-separated)", placeholder="space, tech, science", key="blog_tags")
-    with col2:
-        font = st.selectbox("Font", [
-            'Inter', 'Playfair Display', 'Arial', 'Times New Roman', 'Courier New',
-            'Roboto', 'Open Sans', 'Lora', 'Poppins'
-        ], key="blog_font")
-    with col3:
-        publish_date = st.date_input("Publish Date", datetime.now().date(), key="blog_date")
+    template = st.selectbox("Choose a Template", ["None", "Tech Blog",
+                            "Personal Story", "Tutorial"], key="blog_template")
+    title = st.text_input("Blog Title", placeholder="Enter your blog title", key="blog_title")
+    content = st.text_area("Blog Content", placeholder="Write your blog content here...",
+                           height=300, key="blog_content")
+    tags = st.text_input("Tags (comma-separated)", placeholder="e.g., tech, ai, coding", key="blog_tags")
+    font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"], index=0, key="blog_font")
+    is_published = st.checkbox("Publish immediately", value=True, key="blog_publish")
+    uploaded_files = st.file_uploader("Upload Media (Images/Videos)", accept_multiple_files=True,
+                                      type=['png', 'jpg', 'jpeg', 'gif', 'mp4'], key="blog_media")
 
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Media Upload</h3>', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Upload Image, GIF, or Video", type=[
-                                     'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="blog_media")
+    if template != "None":
+        if template == "Tech Blog":
+            content = "## Introduction\n\n## Technical Details\n\n## Conclusion"
+        elif template == "Personal Story":
+            content = "## The Beginning\n\n## The Journey\n\n## Reflections"
+        elif template == "Tutorial":
+            content = "## Prerequisites\n\n## Step-by-Step Guide\n\n## Summary"
+        st.session_state['blog_content'] = content
+
     media_ids = []
-    if uploaded_file:
-        media_id = dm.save_media(st.session_state.username, uploaded_file)
-        media_ids.append(media_id)
-        media = dm.get_media(st.session_state.username, media_id)
-        if media.type == 'image':
-            st.image(f"data:image/png;base64,{media.content}", caption=media.filename, use_column_width=True)
-        elif media.type == 'gif':
-            st.image(f"data:image/gif;base64,{media.content}", caption=media.filename, use_column_width=True)
-        else:
-            st.video(f"data:video/mp4;base64,{media.content}")
+    if uploaded_files:
+        for file in uploaded_files:
+            media_id = dm.save_media(st.session_state.username, file)
+            media_ids.append(media_id)
 
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Formatting Tools</h3>', unsafe_allow_html=True)
-    cols = st.columns(8)
-    formatting = [
-        ("**Bold**", "Use **text** for bold"),
-        ("*Italic*", "Use *text* for italic"),
-        ("# Header", "Use #, ##, ### for headers"),
-        ("🔗 Link", "Use [text](url) for links"),
-        ("📷 Media", "Use ![media](media_id) for media"),
-        ("📋 List", "Use - or * for bullets, 1. for numbered"),
-        ("💬 Quote", "Use > text for quotes"),
-        ("📑 Code", "Use ```language\ncode\n``` for code")
-    ]
-    for i, (label, info) in enumerate(formatting):
-        with cols[i]:
-            if st.button(label, key=f"format_{i}"):
-                st.info(info)
-
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Content</h3>', unsafe_allow_html=True)
-    content = st.text_area(
-        "Write your blog content here...",
-        value=st.session_state.get('template_content', ''),
-        height=400,
-        placeholder="Start writing your stellar blog post...\n\nUse Markdown formatting:\n- **bold** for bold text\n- *italic* for italic text\n- #, ##, ### for headers\n- [link](url) for links\n- ![media](media_id) for embedded media\n- - or * for bullet lists\n- 1. for numbered lists\n- > for blockquotes\n- ```language\ncode\n``` for code blocks",
-        key="blog_content"
-    )
-
-    if content:
-        st.markdown('<h3 class="text-lg font-semibold mt-6">Preview</h3>', unsafe_allow_html=True)
-        rendered_content = content
-        for media_id in media_ids:
-            media = dm.get_media(st.session_state.username, media_id)
-            if media:
-                if media.type in ['image', 'gif']:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})", f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">')
-                else:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>')
-        st.markdown(rendered_content, unsafe_allow_html=True)
-
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
-        if st.button("💾 Save Draft", key="save_draft", type="primary"):
-            if title and content:
-                blog_id = dm.save_blog(st.session_state.username, title, content, tags, media_ids, font)
-                st.success(f"Blog saved successfully! ID: {blog_id}")
+        if st.button("Save Draft" if not is_published else "Publish Blog", type="primary", key="blog_save"):
+            if not title or not content:
+                st.error("Title and content are required!")
             else:
-                st.error("Please fill in title and content!")
-    with col2:
-        if st.button("🚀 Publish", key="publish_blog", type="primary"):
-            if title and content:
-                blog_id = dm.save_blog(st.session_state.username, title, content, tags, media_ids, font)
-                blog = dm.session_factory.query(Blog).filter_by(id=blog_id).first()
-                st.success(f"Blog published successfully! ID: {blog_id}")
-                st.markdown(
-                    f'<a href="{blog.public_link}" class="text-blue-300 hover:underline">Share your blog</a>', unsafe_allow_html=True)
+                blog_id = dm.save_blog(st.session_state.username, title, content, tags,
+                                       media_ids, font, is_published=is_published)
+                st.success(
+                    f"Blog {'published' if is_published else 'saved as draft'}! View it [here]({APP_URL}/content/blog/{urllib.parse.quote(st.session_state.username)}/{blog_id})")
                 st.balloons()
-            else:
-                st.error("Please fill in title and content!")
-    with col3:
-        if st.button("📄 Export PDF", key="export_pdf", type="primary"):
-            if title and content:
-                blog = Blog(title=title, content=content)
-                pdf_data = export_to_pdf('blog', blog)
-                st.download_button(
-                    "Download PDF",
-                    pdf_data,
-                    file_name=f"{title}.pdf",
-                    mime="application/pdf",
-                    type="primary"
-                )
-            else:
-                st.error("Please fill in title and content!")
+    with col2:
+        if st.button("Preview", key="blog_preview"):
+            st.markdown(f"<h3>{bleach.clean(title)}</h3>", unsafe_allow_html=True)
+            st.markdown(bleach.clean(content), unsafe_allow_html=True)
+            if media_ids:
+                for media_id in media_ids[:1]:
+                    media = dm.get_media(st.session_state.username, media_id)
+                    if media and media.type == 'image':
+                        st.image(base64.b64decode(media.content), width=300)
 
-    st.markdown("</div></div>", unsafe_allow_html=True)
-
-# Case Study Editor
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def case_study_editor():
-    formatting = [
-        ("**", "Bold text"),
-        ("*", "Italic text"),
-        ("#", "Heading 1"),
-        ("##", "Heading 2"),
-        ("- ", "Bullet point"),
-        ("> ", "Blockquote"),
-        ("```", "Code block"),
-        ("---", "Horizontal line")
-    ]
-
     st.markdown("""
     <div class="header">
-        <h1>🔬 Case Study Editor</h1>
+        <h1>📚 Create a Case Study</h1>
+        <p>Document your successes and lessons learned</p>
     </div>
     <div class="container">
-        <div class="card">
     """, unsafe_allow_html=True)
 
-    title = st.text_input("Case Study Title", value=st.session_state.get(
-        'case_template_title', ''), placeholder="Enter case study title...", key="case_title")
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        tags = st.text_input("Tags (comma-separated)", placeholder="business, strategy, analysis", key="case_tags")
-    with col2:
-        font = st.selectbox("Font", [
-            'Inter', 'Playfair Display', 'Arial', 'Times New Roman', 'Courier New',
-            'Roboto', 'Open Sans', 'Lora', 'Poppins'
-        ], key="case_font")
+    template = st.selectbox("Choose a Template", ["None", "Business Case", "Project Analysis"], key="case_template")
+    title = st.text_input("Case Study Title", placeholder="Enter your case study title", key="case_title")
+    problem = st.text_area("Problem Statement", placeholder="Describe the problem...", height=150, key="case_problem")
+    solution = st.text_area("Solution", placeholder="Describe the solution...", height=150, key="case_solution")
+    results = st.text_area("Results", placeholder="Describe the results...", height=150, key="case_results")
+    tags = st.text_input("Tags (comma-separated)", placeholder="e.g., business, tech", key="case_tags")
+    font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"], index=0, key="case_font")
+    is_published = st.checkbox("Publish immediately", value=True, key="case_publish")
+    uploaded_files = st.file_uploader("Upload Media (Images/Videos)", accept_multiple_files=True,
+                                      type=['png', 'jpg', 'jpeg', 'gif', 'mp4'], key="case_media")
 
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Media Upload</h3>', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Upload Image, GIF, or Video", type=[
-                                     'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="case_media")
+    if template != "None":
+        if template == "Business Case":
+            problem = "Describe the business challenge..."
+            solution = "Outline the implemented strategy..."
+            results = "Summarize the outcomes..."
+        elif template == "Project Analysis":
+            problem = "Identify the project issue..."
+            solution = "Detail the project approach..."
+            results = "Evaluate the project impact..."
+        st.session_state['case_problem'] = problem
+        st.session_state['case_solution'] = solution
+        st.session_state['case_results'] = results
+
     media_ids = []
-    if uploaded_file:
-        media_id = dm.save_media(st.session_state.username, uploaded_file)
-        media_ids.append(media_id)
-        media = dm.get_media(st.session_state.username, media_id)
-        if media.type == 'image':
-            st.image(f"data:image/png;base64,{media.content}", caption=media.filename, use_column_width=True)
-        elif media.type == 'gif':
-            st.image(f"data:image/gif;base64,{media.content}", caption=media.filename, use_column_width=True)
-        else:
-            st.video(f"data:video/mp4;base64,{media.content}")
+    if uploaded_files:
+        for file in uploaded_files:
+            media_id = dm.save_media(st.session_state.username, file)
+            media_ids.append(media_id)
 
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Formatting Tools</h3>', unsafe_allow_html=True)
-    cols = st.columns(8)
-    for i, (label, info) in enumerate(formatting):
-        with cols[i]:
-            if st.button(label, key=f"case_format_{i}"):
-                st.info(info)
-
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Problem Statement</h3>', unsafe_allow_html=True)
-    problem = st.text_area(
-        "Describe the problem or challenge",
-        value=st.session_state.get('case_template_problem', ''),
-        height=150,
-        placeholder="What problem were you trying to solve? Provide context and background...\n\nUse Markdown formatting...",
-        key="case_problem"
-    )
-
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Solution Approach</h3>', unsafe_allow_html=True)
-    solution = st.text_area(
-        "Explain your solution methodology",
-        value=st.session_state.get('case_template_solution', ''),
-        height=200,
-        placeholder="How did you approach the problem? What methods, tools, or strategies did you use?\n\nUse Markdown formatting...",
-        key="case_solution"
-    )
-
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Results & Outcomes</h3>', unsafe_allow_html=True)
-    results = st.text_area(
-        "Share the results and impact",
-        value=st.session_state.get('case_template_results', ''),
-        height=150,
-        placeholder="What were the outcomes? Include metrics, feedback, and lessons learned...\n\nUse Markdown formatting...",
-        key="case_results"
-    )
-
-    if problem or solution or results:
-        st.markdown('<h3 class="text-lg font-semibold mt-6">Preview</h3>', unsafe_allow_html=True)
-        rendered_content = ""
-        if problem:
-            rendered_content += f"**Problem:** {problem}\n\n"
-        if solution:
-            rendered_content += f"**Solution:** {solution}\n\n"
-        if results:
-            rendered_content += f"**Results:** {results}\n\n"
-        for media_id in media_ids:
-            media = dm.get_media(st.session_state.username, media_id)
-            if media:
-                if media.type in ['image', 'gif']:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})", f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">')
-                else:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>')
-        st.markdown(rendered_content, unsafe_allow_html=True)
-
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
-        if st.button("💾 Save Draft", key="save_case_draft", type="primary"):
-            if title and problem and solution:
-                case_id = dm.save_case_study(st.session_state.username, title, problem,
-                                             solution, results, tags, media_ids, font)
-                st.success(f"Case study saved successfully! ID: {case_id}")
+        if st.button("Save Draft" if not is_published else "Publish Case Study", type="primary", key="case_save"):
+            if not all([title, problem, solution, results]):
+                st.error("All fields are required!")
             else:
-                st.error("Please fill in title, problem, and solution!")
-    with col2:
-        if st.button("🚀 Publish", key="publish_case", type="primary"):
-            if title and problem and solution:
                 case_id = dm.save_case_study(st.session_state.username, title, problem,
-                                             solution, results, tags, media_ids, font)
-                case = dm.session_factory.query(CaseStudy).filter_by(id=case_id).first()
-                st.success(f"Case study published successfully! ID: {case_id}")
-                st.markdown(
-                    f'<a href="{case.public_link}" class="text-blue-300 hover:underline">Share your case study</a>', unsafe_allow_html=True)
+                                             solution, results, tags, media_ids, font, is_published)
+                st.success(
+                    f"Case Study {'published' if is_published else 'saved as draft'}! View it [here]({APP_URL}/content/case_study/{urllib.parse.quote(st.session_state.username)}/{case_id})")
                 st.balloons()
-            else:
-                st.error("Please fill in title, problem, and solution!")
-    with col3:
-        if st.button("📄 Export PDF", key="export_case_pdf", type="primary"):
-            if title and problem and solution:
-                case = CaseStudy(title=title, problem=problem, solution=solution, results=results)
-                pdf_data = export_to_pdf('case_study', case)
-                st.download_button(
-                    "Download PDF",
-                    pdf_data,
-                    file_name=f"{title}.pdf",
-                    mime="application/pdf",
-                    type="primary"
-                )
-            else:
-                st.error("Please fill in title, problem, and solution!")
+    with col2:
+        if st.button("Preview", key="case_preview"):
+            st.markdown(f"<h3>{bleach.clean(title)}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<b>Problem:</b> {bleach.clean(problem)})", unsafe_allow_html=True)
+            st.markdown(f"<b>Solution:</b> {bleach.clean(solution)})", unsafe_allow_html=True)
+            st.markdown(f"<b>Results:</b> {bleach.clean(results)})", unsafe_allow_html=True)
+            if media_ids:
+                for media_id in media_ids[:1]:
+                    media = dm.get_media(st.session_state.username, media_id)
+                    if media and media.type == 'image':
+                        st.image(base64.b64decode(media.content), width=300)
 
-    st.markdown("</div></div>", unsafe_allow_html=True)
-# My Content
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def my_content():
     st.markdown("""
     <div class="header">
         <h1>📚 My Content</h1>
+        <p>Manage your blogs and case studies</p>
     </div>
     <div class="container">
     """, unsafe_allow_html=True)
 
-    tab1, tab2 = st.tabs(["My Blogs", "My Case Studies"])
-    with tab1:
-        blogs = dm.get_user_blogs(st.session_state.username)
-        if blogs:
-            for blog in reversed(blogs):
-                with st.expander(f"📝 {blog.title} (ID: {blog.id})"):
-                    st.markdown(f"""
-                    <p class="text-sm text-gray-400">
-                        <strong>Created:</strong> {blog.created_at.strftime('%Y-%m-%d %H:%M')} | 
-                        <strong>Tags:</strong> {', '.join(blog.tags)} | 
-                        <strong>Views:</strong> {blog.views} | 
-                        <strong>Font:</strong> {blog.font}
-                    </p>
-                    <p><a href="{blog.public_link}" class="text-blue-300 hover:underline">Public Link</a></p>
-                    <hr class="border-gray-600">
-                    """, unsafe_allow_html=True)
-                    rendered_content = blog.content
-                    for media_id in blog.media:
-                        media = dm.get_media(st.session_state.username, media_id)
-                        if media:
-                            if media.type in ['image', 'gif']:
-                                rendered_content = rendered_content.replace(
-                                    f"![media]({media_id})", f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">')
-                            else:
-                                rendered_content = rendered_content.replace(
-                                    f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>')
-                    st.markdown(rendered_content, unsafe_allow_html=True)
-                    if st.button("📄 Export PDF", key=f"export_blog_{blog.id}", type="primary"):
-                        pdf_data = export_to_pdf('blog', blog)
-                        st.download_button(
-                            "Download PDF",
-                            pdf_data,
-                            file_name=f"{blog.title}.pdf",
-                            mime="application/pdf",
-                            type="primary"
-                        )
-        else:
-            st.info("No blogs yet. Create your first blog post!")
+    st.subheader("Your Blogs")
+    blogs = dm.get_user_blogs(st.session_state.username)
+    for blog in blogs:
+        with st.expander(f"{bleach.clean(blog.title)} | {'Published' if blog.is_published else 'Draft'}"):
+            st.markdown(f"""
+            <p><b>Created:</b> {blog.created_at.strftime('%B %d, %Y')}</p>
+            <p><b>Views:</b> {blog.views}</p>
+            <p>{bleach.clean(blog.content[:200])}...</p>
+            """, unsafe_allow_html=True)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.link_button("View", blog.public_link)
+            with col2:
+                if st.button("Edit", key=f"edit_blog_{blog.id}"):
+                    st.session_state.edit_content = {'type': 'blog', 'id': blog.id}
+                    st.query_params.page = "Edit Content"
+                    st.rerun()
+            with col3:
+                if st.button("Delete", key=f"delete_blog_{blog.id}"):
+                    with Session() as session:
+                        session.delete(blog)
+                        session.commit()
+                    st.success("Blog deleted!")
+                    st.rerun()
 
-    with tab2:
-        case_studies = dm.get_user_case_studies(st.session_state.username)
-        if case_studies:
-            for case in reversed(case_studies):
-                with st.expander(f"🔬 {case.title} (ID: {case.id})"):
-                    st.markdown(f"""
-                    <p class="text-sm text-gray-400">
-                        <strong>Created:</strong> {case.created_at.strftime('%Y-%m-%d %H:%M')} | 
-                        <strong>Tags:</strong> {', '.join(case.tags)} | 
-                        <strong>Views:</strong> {case.views} | 
-                        <strong>Font:</strong> {case.font}
-                    </p>
-                    <p><a href="{case.public_link}" class="text-blue-300 hover:underline">Public Link</a></p>
-                    <hr class="border-gray-600">
-                    """, unsafe_allow_html=True)
-                    rendered_content = f"**Problem:** {case.problem}\n\n**Solution:** {case.solution}\n\n**Results:** {case.results}"
-                    for media_id in case.media:
-                        media = dm.get_media(st.session_state.username, media_id)
-                        if media:
-                            if media.type in ['image', 'gif']:
-                                rendered_content = rendered_content.replace(
-                                    f"![media]({media_id})", f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">')
-                            else:
-                                rendered_content = rendered_content.replace(
-                                    f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>')
-                    st.markdown(rendered_content, unsafe_allow_html=True)
-                    if st.button("📄 Export PDF", key=f"export_case_{case.id}", type="primary"):
-                        pdf_data = export_to_pdf('case_study', case)
-                        st.download_button(
-                            "Download PDF",
-                            pdf_data,
-                            file_name=f"{case.title}.pdf",
-                            mime="application/pdf",
-                            type="primary"
-                        )
-        else:
-            st.info("No case studies yet. Create your first case study!")
+    st.subheader("Your Case Studies")
+    case_studies = dm.get_user_case_studies(st.session_state.username)
+    for case in case_studies:
+        with st.expander((f"{bleach.clean(case.title)}") | {'Published' if case.is_published else 'Draft'}):
+            st.markdown(f"""
+            <p><b>Created:</b> {case.created_at.strftime('%B %d, %Y')}</p>
+            <p><b>Views:</b> {case.views}</p>
+            <p><b>Problem:</b> {bleach.clean(case.problem[:200])}...</p>
+            """, unsafe_allow_html=True)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.link_button("View", case.public_link)
+            with col2:
+                if st.button("Edit", key=f"edit_case_{case.id}"):
+                    st.session_state.edit_content = {'type': 'case_study', 'id': case.id}
+                    st.query_params.page = "Edit Content"
+                    st.rerun()
+            with col3:
+                if st.button("Delete", key=f"delete_case_{case.id}"):
+                    with Session() as session:
+                        session.delete(case)
+                        session.commit()
+                    st.success("Case study deleted!")
+                    st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-# Profile View
-
-
-def profile_view(username):
-    st.markdown(f"""
-    <div class="header">
-        <h1>👤 {username}'s Profile</h1>
-    </div>
-    <div class="container">
-        <div class="card">
-    """, unsafe_allow_html=True)
-
-    profile = dm.get_user_profile(username)
-    st.markdown(f"""
-    <h3 class="text-lg font-semibold">Bio</h3>
-    <p class="text-gray-200">{profile.get('bio', 'No bio available.')}</p>
-    """, unsafe_allow_html=True)
-    social_links = profile.get('social_links', {})
-    if social_links:
-        st.markdown('<h3 class="text-lg font-semibold mt-4">Connect</h3>', unsafe_allow_html=True)
-        for platform, link in social_links.items():
-            if link:
-                st.markdown(
-                    f'<p>- <a href="{link}" class="text-blue-300 hover:underline">{platform.capitalize()}</a></p>', unsafe_allow_html=True)
-
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Their Content</h3>', unsafe_allow_html=True)
-    blogs = dm.get_user_blogs(username)
-    case_studies = dm.get_user_case_studies(username)
-
-    if blogs:
-        st.markdown('<p class="text-md font-medium">Blogs</p>', unsafe_allow_html=True)
-        for blog in blogs:
-            st.markdown(f'<p>- {blog.title} ({blog.created_at.strftime("%Y-%m-%d")})</p>', unsafe_allow_html=True)
-
-    if case_studies:
-        st.markdown('<p class="text-md font-medium mt-4">Case Studies</p>', unsafe_allow_html=True)
-        for case in case_studies:
-            st.markdown(f'<p>- {case.title} ({case.created_at.strftime("%Y-%m-%d")})</p>', unsafe_allow_html=True)
-
-    st.markdown("</div></div>", unsafe_allow_html=True)
-
-# Profile Settings
-
-
-def profile_settings():
-    st.markdown("""
-    <div class="header">
-        <h1>👤 Profile Settings</h1>
-    </div>
-    <div class="container">
-        <div class="card">
-    """, unsafe_allow_html=True)
-
-    profile = dm.get_user_profile(st.session_state.username)
-    bio = st.text_area("Bio", value=profile.get('bio', ''),
-                       placeholder="Tell us about your cosmic journey...", key="profile_bio")
-    preferred_font = st.selectbox("Preferred Font", [
-        'Inter', 'Playfair Display', 'Arial', 'Times New Roman', 'Courier New',
-        'Roboto', 'Open Sans', 'Lora', 'Poppins'
-    ], index=0 if profile.get('preferred_font') == 'Inter' else 1, key="profile_font")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        twitter = st.text_input("Twitter", value=profile.get('social_links', {}).get(
-            'twitter', ''), placeholder="@username", key="twitter")
-    with col2:
-        linkedin = st.text_input("LinkedIn", value=profile.get('social_links', {}).get(
-            'linkedin', ''), placeholder="linkedin.com/in/username", key="linkedin")
-
-    github = st.text_input("GitHub", value=profile.get('social_links', {}).get(
-        'github', ''), placeholder="github.com/username", key="github")
-    website = st.text_input("Website", value=profile.get('social_links', {}).get(
-        'website', ''), placeholder="https://yourwebsite.com", key="website")
-
-    if st.button("💾 Save Profile", key="save_profile", type="primary"):
-        user = dm.session_factory.query(User).filter_by(username=st.session_state.username).first()
-        user.profile = {
-            'bio': bleach.clean(bio),
-            'social_links': {
-                'twitter': bleach.clean(twitter),
-                'linkedin': bleach.clean(linkedin),
-                'github': bleach.clean(github),
-                'website': bleach.clean(website)
-            },
-            'preferred_font': bleach.clean(preferred_font)
-        }
-        dm.session_factory.commit()
-        st.success("Profile updated successfully!")
-
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Security</h3>', unsafe_allow_html=True)
-    new_password = st.text_input("New Password", type="password", key="new_password")
-    confirm_password = st.text_input("Confirm New Password", type="password", key="confirm_new_password")
-
-    if st.button("🔒 Update Password", key="update_password", type="primary"):
-        if new_password and new_password == confirm_password and len(new_password) >= 8:
-            user = dm.session_factory.query(User).filter_by(username=st.session_state.username).first()
-            user.password = dm.hash_password(new_password)
-            dm.session_factory.commit()
-            st.success("Password updated successfully!")
-        elif new_password != confirm_password:
-            st.error("Passwords don't match!")
-        elif len(new_password) < 8:
-            st.error("Password must be at least 8 characters!")
-
-    st.markdown("</div></div>", unsafe_allow_html=True)
-
-# Content Templates
 
 
 def content_templates():
     st.markdown("""
     <div class="header">
-        <h1>📋 Content Templates</h1>
+        <h1>📄 Templates</h1>
+        <p>Explore pre-built templates for your content</p>
     </div>
     <div class="container">
-        <div class="card">
     """, unsafe_allow_html=True)
 
-    template_type = st.selectbox("Choose template type", [
-                                 "Blog Templates", "Case Study Templates"], key="template_type")
-    templates = {
-        "Blog Templates": {
-            "How-To Guide": {
-                "title": "How to [Do Something]: A Complete Guide",
-                "content": """# Introduction
-Briefly explain what this guide covers and why it's useful.
-
-## What You'll Need
-- List any prerequisites
-- Tools or materials needed
-
-## Step-by-Step Instructions
-
-### Step 1: [First Step]
-Detailed explanation of the first step.
-
-### Step 2: [Second Step]
-Detailed explanation of the second step.
-
-## Conclusion
-Summarize what was accomplished and next steps.
-
-## Additional Resources
-- Link to related articles
-- Useful tools or websites"""
-            },
-            "Product Review": {
-                "title": "[Product Name] Review: Is It Worth It?",
-                "content": """# Introduction
-Brief overview of the product and why you're reviewing it.
-
-## Pros
-- List the positive aspects
-- What works well
-- Value proposition
-
-## Cons
-- Areas for improvement
-- Limitations or drawbacks
-
-## My Experience
-Share your personal experience using the product.
-
-## Final Verdict
-Overall rating and recommendation.
-
-## Alternatives
-Mention similar products worth considering."""
-            }
+    templates = [
+        {
+            'name': 'Tech Blog',
+            'type': 'blog',
+            'content': "## Introduction\n\n## Technical Details\n\n## Conclusion\n",
+            'description': 'Ideal for tech articles and tutorials'
         },
-        "Case Study Templates": {
-            "Business Case Study": {
-                "title": "[Company/Project Name]: [Brief Description of Challenge]",
-                "problem": """Describe the business challenge or problem:
-- What was the situation?
-- What were the key pain points?
-- What was at stake?
-- Who were the stakeholders involved?""",
-                "solution": """Explain your approach:
-- What methodology did you use?
-- What tools or frameworks were applied?
-- What was your role in the solution?
-- How did you implement the solution?""",
-                "results": """Share the outcomes:
-- Quantifiable results (metrics, percentages, cost savings)
-- Qualitative improvements
-- Stakeholder feedback
-- Lessons learned
-- Long-term impact"""
-            },
-            "Technical Case Study": {
-                "title": "[Project Name]: [Technology/Framework] Implementation",
-                "problem": """Technical challenge overview:
-- What system or process needed improvement?
-- What were the technical constraints?
-- What were the performance requirements?
-- What was the existing architecture?""",
-                "solution": """Technical approach:
-- Architecture decisions and rationale
-- Technologies and tools selected
-- Implementation strategy
-- Code examples or diagrams (if applicable)""",
-                "results": """Technical outcomes:
-- Performance improvements
-- System reliability metrics
-- Scalability achievements
-- Code quality measures
-- User adoption and feedback"""
-            }
+        {
+            'name': 'Personal Story',
+            'type': 'blog',
+            'content': "## The Beginning\n\n## The Journey\n\n## Reflections\n",
+            'description': 'Perfect for narrative-driven posts'
+        },
+        {
+            'name': 'Business Case',
+            'type': 'case_study',
+            'problem': "Describe the business challenge...",
+            'solution': "Outline the implemented strategy...",
+            'results': "Summarize the outcomes...",
+            'description': 'Structured for business analysis'
         }
-    }
+    ]
 
-    selected_template = st.selectbox("Select a template", list(
-        templates[template_type].keys()), key="selected_template")
-    if st.button("📋 Use This Template", key="use_template", type="primary"):
-        template = templates[template_type][selected_template]
-        if template_type == "Blog Templates":
-            st.session_state.template_title = template["title"]
-            st.session_state.template_content = template["content"]
-            st.success("Template loaded! Go to 'Write Blog' to use it.")
-        else:
-            st.session_state.case_template_title = template["title"]
-            st.session_state.case_template_problem = template["problem"]
-            st.session_state.case_template_solution = template["solution"]
-            st.session_state.case_template_results = template["results"]
-            st.success("Template loaded! Go to 'Create Case Study' to use it.")
+    for template in templates:
+        st.markdown('<div class="template-card"', unsafe_allow_html=True)
+        st.markdown(f"""
+        <h3>{template['name']}</h3>
+        <p>{template['description']}</p>
+        """, unsafe_allow_html=True)
+        if st.button(f"Use {template['name']} Template", key=f"template_{template['name']}"):
+            if template['type'] == 'blog':
+                st.session_state['blog_content'] = template['content']
+                st.query_params.page = "Write Blog"
+            else:
+                st.session_state['case_problem'] = template['problem']
+                st.session_state['case_solution'] = template['solution']
+                st.session_state['case_results'] = template['results']
+                st.query_params.page = "Create Case Study"
+            st.rerun()
+        st.markdown('</div>', unsafe_template=True)
 
-    st.markdown('<h3 class="text-lg font-semibold mt-6">Template Preview</h3>', unsafe_allow_html=True)
-    template = templates[template_type][selected_template]
-    if template_type == "Blog Templates":
-        st.markdown(f'<p class="font-semibold">Title:</p><p>{template["title"]}</p>', unsafe_allow_html=True)
-        st.markdown('<p class="font-semibold mt-4">Content:</p>', unsafe_allow_html=True)
-        st.code(template['content'])
-    else:
-        st.markdown(f'<p class="font-semibold">Title:</p><p>{template["title"]}</p>', unsafe_allow_html=True)
-        st.markdown('<p class="font-semibold mt-4">Problem:</p>', unsafe_allow_html=True)
-        st.code(template['problem'])
-        st.markdown('<p class="font-semibold mt-4">Solution:</p>', unsafe_allow_html=True)
-        st.code(template['solution'])
-        st.markdown('<p class="font-semibold mt-4">Results:</p>', unsafe_allow_html=True)
-        st.code(template['results'])
-
-    st.markdown("</div></div>", unsafe_allow_html=True)
-
-# Export Content
-
-
-def export_content():
-    import json
-
-    st.markdown("""
-    <div class="header">
-        <h1>📤 Export Content</h1>
-    </div>
-    <div class="container">
-        <div class="card">
-    """, unsafe_allow_html=True)
-
-    export_format = st.selectbox("Choose export format", ["JSON", "Markdown", "PDF"], key="export_format")
-    content_type = st.selectbox(
-        "Content type", ["Blogs Only", "Case Studies Only", "All Content"], key="export_content_type")
-
-    if st.button("Generate Export", key="generate_export", type="primary"):
-        user_blogs = dm.get_user_blogs(st.session_state.username)
-        user_cases = dm.get_user_case_studies(st.session_state.username)
-        export_data = {}
-        if content_type in ["Blogs Only", "All Content"]:
-            export_data['blogs'] = [{
-                'id': blog.id, 'title': blog.title, 'content': blog.content,
-                'tags': blog.tags, 'created_at': blog.created_at.isoformat(),
-                'views': blog.views, 'font': blog.font
-            } for blog in user_blogs]
-        if content_type in ["Case Studies Only", "All Content"]:
-            export_data['case_studies'] = [{
-                'id': case.id, 'title': case.title, 'problem': case.problem,
-                'solution': case.solution, 'results': case.results,
-                'tags': case.tags, 'created_at': case.created_at.isoformat(),
-                'views': case.views, 'font': case.font
-            } for case in user_cases]
-
-        if export_format == "JSON":
-            st.download_button(
-                "Download JSON",
-                json.dumps(export_data, indent=2),
-                file_name=f"{st.session_state.username}_content.json",
-                mime="application/json",
-                type="primary"
-            )
-        elif export_format == "Markdown":
-            md_content = "# My Content Export\n\n"
-            for blog in export_data.get('blogs', []):
-                md_content += f"## {blog['title']}\n\n{blog['content']}\n\n---\n\n"
-            for case in export_data.get('case_studies', []):
-                md_content += f"## {case['title']}\n\n**Problem:** {case['problem']}\n\n**Solution:** {case['solution']}\n\n**Results:** {case['results']}\n\n---\n\n"
-            st.download_button(
-                "Download Markdown",
-                md_content,
-                file_name=f"{st.session_state.username}_content.md",
-                mime="text/markdown",
-                type="primary"
-            )
-        elif export_format == "PDF":
-            for blog in export_data.get('blogs', []):
-                pdf_data = export_to_pdf('blog', Blog(**blog))
-                st.download_button(
-                    f"Download {blog['title']} PDF",
-                    pdf_data,
-                    file_name=f"{blog['title']}.pdf",
-                    mime="application/pdf",
-                    type="primary"
-                )
-            for case in export_data.get('case_studies', []):
-                pdf_data = export_to_pdf('case_study', CaseStudy(**case))
-                st.download_button(
-                    f"Download {case['title']} PDF",
-                    pdf_data,
-                    file_name=f"{case['title']}.pdf",
-                    mime="application/pdf",
-                    type="primary"
-                )
-
-    st.markdown("</div></div>", unsafe_allow_html=True)
-# Analytics Dashboard
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def analytics_dashboard():
     st.markdown("""
     <div class="header">
-        <h1>📊 Content Analytics</h1>
+        <h1>📈 Analytics Dashboard</h1>
+        <p>Track your content's performance</p>
     </div>
     <div class="container">
     """, unsafe_allow_html=True)
 
-    user_blogs = dm.get_user_blogs(st.session_state.username)
-    user_cases = dm.get_user_case_studies(st.session_state.username)
-
-    if not user_blogs and not user_cases:
-        st.info("No content available for analytics.")
-        st.markdown("</div>", unsafe_allow_html=True)
-        return
-
+    analytics = dm.get_analytics(st.session_state.username)
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        total_words = sum(len(blog.content.split()) for blog in user_blogs)
-        total_words += sum(len(f"{case.problem} {case.solution} {case.results}".split()) for case in user_cases)
         st.markdown(
-            f'<div class="card text-center"><h3 class="text-2xl font-bold text-blue-400">{total_words:,}</h3><p class="text-gray-400">Total Words</p></div>', unsafe_allow_html=True)
+            f"<div class='analytics-box'><p><strong>Total Blogs:</strong> {analytics['total_blogs']}</p></div>", unsafe_allow_html=True)
     with col2:
-        avg_blog_length = sum(len(blog.content.split()) for blog in user_blogs) / len(user_blogs) if user_blogs else 0
         st.markdown(
-            f'<div class="card text-center"><h3 class="text-2xl font-bold text-blue-400">{int(avg_blog_length)}</h3><p class="text-gray-400">Avg Blog Length</p></div>', unsafe_allow_html=True)
+            f"<div class='analytics-box'><p><strong>Case Studies:</strong> {analytics['total_case_studies']}</p></div>", unsafe_allow_html=True)
     with col3:
-        total_tags = set()
-        for blog in user_blogs:
-            total_tags.update(blog.tags)
-        for case in user_cases:
-            total_tags.update(case.tags)
         st.markdown(
-            f'<div class="card text-center"><h3 class="text-2xl font-bold text-blue-400">{len(total_tags)}</h3><p class="text-gray-400">Unique Tags</p></div>', unsafe_allow_html=True)
+            f"<div class='analytics-box'><p><strong>Total Views:</strong> {analytics['total_views']}</p></div>", unsafe_allow_html=True)
     with col4:
-        total_views = sum(blog.views for blog in user_blogs) + sum(case.views for case in user_cases)
         st.markdown(
-            f'<div class="card text-center"><h3 class="text-2xl font-bold text-blue-400">{total_views}</h3><p class="text-gray-400">Total Views</p></div>', unsafe_allow_html=True)
+            f"<div class='analytics-box'><p><strong>Comments:</strong> {analytics['total_comments']}</p></div>", unsafe_allow_html=True)
 
-    st.markdown('<h2 class="text-xl font-semibold mt-8">Publishing Activity</h2>', unsafe_allow_html=True)
-    dates = [blog.created_at.strftime('%Y-%m-%d') for blog in user_blogs] + \
-        [case.created_at.strftime('%Y-%m-%d') for case in user_cases]
-    date_counts = {}
-    for date in dates:
-        date_counts[date] = date_counts.get(date, 0) + 1
-    if date_counts:
-        st.bar_chart(date_counts)
+    st.subheader("Recent Content Performance")
+    for blog in analytics['recent_blogs']:
+        st.markdown(
+            f"<p><b>Blog:</b> {bleach.clean(blog.title)} | Views: {blog.views} | Created: {blog.created_at.strftime('%B %d, %Y')}</p>", unsafe_allow_html=True)
+    for case in analytics['recent_case_studies']:
+        st.markdown(
+            f"<p><b>Case Study:</b> {bleach.clean(case.title)} | Views: {case.views} | Created: {case.created_at.strftime('%B %d, %Y')}</p>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-# Search and Filter
 
 
 def content_search_and_filter():
     st.markdown("""
     <div class="header">
-        <h1>🔍 Advanced Search</h1>
+        <h1>🔍 Search & Filter</h1>
+        <p>Find content that inspires you</p>
     </div>
     <div class="container">
-        <div class="card">
     """, unsafe_allow_html=True)
 
-    search_query = st.text_input("Search your content", placeholder="Enter keywords...", key="search_query")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        content_type_filter = st.selectbox("Content Type", ["All", "Blogs", "Case Studies"], key="content_type_filter")
-    with col2:
-        date_from = st.date_input("From Date", datetime(2020, 1, 1).date(), key="date_from")
-    with col3:
-        date_to = st.date_input("To Date", datetime.now().date(), key="date_to")
-
-    tag_filter = st.text_input("Filter by tags (comma-separated)", placeholder="tech, business", key="tag_filter")
-
-    if st.button("🔍 Search", key="search_btn", type="primary"):
-        user_blogs = dm.get_user_blogs(st.session_state.username)
-        user_cases = dm.get_user_case_studies(st.session_state.username)
-        results = []
-
-        if content_type_filter in ["All", "Blogs"]:
-            for blog in user_blogs:
-                if search_query.lower() in blog.title.lower() or search_query.lower() in blog.content.lower():
-                    blog_date = blog.created_at.date()
-                    if date_from <= blog_date <= date_to:
-                        if not tag_filter or any(tag.strip().lower() in [t.lower() for t in blog.tags] for tag in tag_filter.split(',')):
-                            results.append(('blog', blog))
-
-        if content_type_filter in ["All", "Case Studies"]:
-            for case in user_cases:
-                search_text = f"{case.title} {case.problem} {case.solution} {case.results}"
-                if search_query.lower() in search_text.lower():
-                    case_date = case.created_at.date()
-                    if date_from <= case_date <= date_to:
-                        if not tag_filter or any(tag.strip().lower() in [t.lower() for t in case.tags] for tag in tag_filter.split(',')):
-                            results.append(('case_study', case))
-
-        st.markdown(f'<p class="text-lg font-semibold">Found {len(results)} results:</p>', unsafe_allow_html=True)
-        for content_type, content in results:
-            if content_type == 'blog':
-                st.markdown(
-                    f'<p class="font-semibold">📝 {content.title}</p><p class="text-sm text-gray-400">{content.created_at.strftime("%Y-%m-%d")}</p><p>{content.content[:200]}...</p><hr class="border-gray-600">', unsafe_allow_html=True)
+    query = st.text_input("Search Keywords", placeholder="Enter keywords...")
+    content_type = st.selectbox("Content Type", ["All", "Blog", "Case Study"], key="filter_type")
+    author = st.text_input("Author", placeholder="Enter username (optional)", key="filter_author")
+    tags = st.text_input("Tags (comma-separated)", placeholder="e.g., tech, ai", key="filter_tags")
+    if st.button("Search"):
+        filters = {}
+        if content_type != "All":
+            filters['content_type'] = content_type.lower()
+        if author:
+            filters['author'] = author
+        if tags:
+            filters['tags'] = [tag.strip() for tag in tags.split(',')]
+        results = search_content(query, filters)
+        st.markdown(f"<p class='text-lg'>Found {len(results)} results</p>", unsafe_allow_html=True)
+        for content in results:
+            st.markdown('<div class="content-card">', unsafe_allow_html=True)
+            if content['type'] == 'blog':
+                st.markdown(f"""
+                <h3>{bleach.clean(content['content'].title)}</h3>
+                <p><strong>By {bleach.clean(content['author'])}</strong> | {content['content'].created_at.strftime('%B %d, %Y')}</p>
+                <p>{bleach.clean(content['content'].content[:100])}...</p>
+                """, unsafe_allow_html=True)
+                st.link_button("Read More", content['content'].public_link)
             else:
-                st.markdown(
-                    f'<p class="font-semibold">🔬 {content.title}</p><p class="text-sm text-gray-400">{content.created_at.strftime("%Y-%m-%d")}</p><p>{content.problem[:200]}...</p><hr class="border-gray-600">', unsafe_allow_html=True)
+                st.markdown(f"""
+                <h3>{bleach.clean(content['content'].title)}</h3>
+                <p><strong>By {bleach.clean(content['author'])}</strong> | {content['content'].created_at.strftime('%B %d, %Y')}</p>
+                <p><strong>Problem:</strong> {bleach.clean(content['content'].problem[:100])}...</p>
+                """, unsafe_allow_html=True)
+                st.link_button("Read More", content['content'].public_link)
+            st.markdown('</div>', unsafe_html=True)
 
-    st.markdown("</div></div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def profile_settings():
+    st.markdown("""
+    <div class="header">
+        <h1>⚙️ Profile Settings</h1>
+        <p>Customize your profile and preferences</p>
+    </div>
+    <div class="container">
+    """, unsafe_allow_html=True)
+
+    profile = dm.get_user_profile(st.session_state.username)
+    with st.form("profile_form"):
+        bio = st.text_area("Bio", value=profile.get('bio', ''), key="bio")
+        avatar = st.text_input("Avatar URL", value=profile.get('avatar', ''), key="avatar")
+        preferred_font = st.selectbox("Preferred Font", ["Inter", "Roboto", "Merriweather", "Lora"], index=[
+                                      "Inter"].index(profile.get('preferred_font', 'Inter')), key="font")
+        theme = st.selectbox("Theme", ["light"], index=["light"].index(profile.get('theme', 'light')), key="theme")
+        social_links = {}
+        for i in range(3):
+            platform = st.text_input(f"Social Platform {i + 1}", key=f"platform_{i}")
+            url = st.text_input(f"Social URL {i + 1}", key=f"url_{i}")
+            if platform and url:
+                social_links[platform] = url
+        if st.form_submit_button("Save Profile"):
+            profile_data = {
+                'bio': bio,
+                'avatar': avatar,
+                'preferred_font': preferred_font,
+                'theme': social_links
+            }
+            if dm.update_profile(st.session_state.username, profile_data):
+                st.success("Profile updated!")
+                st.rerun()
+
+    st.subheader("Account Settings")
+    with st.form("account_form"):
+        current_password = st.text_input("Current Password", type="password", key="current_password")
+        new_password = st.text_input("New Password", type="password", key="new_password")
+        confirm_new = st.text_input("Confirm New Password", type="password", key="confirm_new")
+        if st.form_submit_button("Change Password"):
+            if not all([current_password, new_password, confirm_new]):
+                st.error("All fields are required!")
+            elif new_password != confirm_new:
+                st.error("New passwords don't match!")
+            elif len(new_password) < 8:
+                st.error("New password must be at least 8 characters!")
+            elif not dm.check_password(current_password, st.session_state.user_password):
+                st.error("Incorrect current password!")
+            else:
+                with Session() as session:
+                    user = session.query(User).filter_by(username=st.session_state.username).first()
+                    user.password = dm.hash_password(new_password)
+                    session.commit()
+                st.session_state.user_password = user.password
+                st.success("Password changed successfully!")
+
+    st.subheader("Notification Preferences")
+    notifications = profile.get('notifications', {'email_comments': True, 'email_follows': False})
+    with st.form("notifications_form"):
+        email_comments = st.checkbox("Email notifications for comments",
+                                     value=notifications.get('email_comments', True))
+        email_follows = st.checkbox("Email notifications for follows", value=notifications.get('email_follows', False))
+        if st.form_submit_button("Save Notifications"):
+            profile['notifications'] = {'email_comments': email_comments, 'email_follows': email_follows}
+            dm.update_profile(st.session_state.username, profile)
+            st.success("Notification preferences saved!")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def export_content():
+    st.markdown("""
+    <div class="header">
+        <h1>📤 Export Content</h1>
+        <p>Download your blogs and case studies</p>
+    </div>
+    <div class="container">
+    """, unsafe_allow_html=True)
+
+    content_type = st.selectbox("Content Type", ["Blog", "Case Study"], key="export_type")
+    blogs = dm.get_user_blogs(st.session_state.username) if content_type == "Blog" else dm.get_user_case_studies(
+        st.session_state.username)
+    selected_content = st.multiselect("Select Content to Export", [b.title for b in blogs], key="export_select")
+
+    if st.button("Export Selected", type="primary"):
+        for title in selected_content:
+            content = next(b for b in selected_content if b.title == title)
+            media_items = [dm.get_media(st.session_state.username, mid) for mid in content.media]
+            pdf_data = export_to_pdf(content_type.lower(), content, [m for m in media_items if m])
+            st.download_button(
+                label=f"Download {title} as PDF",
+                data=pdf_data,
+                file_name=f"{bleach.clean(title)}.pdf",
+                mime="application/pdf",
+                key=f"export_{title}"
+            )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def content_view():
+    query_params = st.query_params
+    content_type = query_params.get('content_type', [''])[0]
+    username = query_params.get('username', [''])[0]
+    content_id = query_params.get('content_id', [''])[0]
+
+    if not all([content_type, username, content_id]):
+        st.error("Invalid content URL!")
+        return
+
+    with Session() as session:
+        if content_type == 'blog':
+            content = session.query(Blog).filter_by(id=content_id, username=username).first()
+        else:
+            content = session.query(CaseStudy).filter_by(id=content_id, username=username).first()
+
+        if not content:
+            st.error("Content not found!")
+            return
+
+        dm.increment_views(content_type, content_id)
+
+        st.markdown(f"""
+        <div class="header">
+            <h1>{bleach.clean(content.title)}</h1>
+            <p>By {bleach.clean(username)} | {content.created_at.strftime('%B %d, %Y')} | 👀 {content.views} views</p>
+        </div>
+        <div class="container">
+        """, unsafe_allow_html=True)
+
+        if content_type == 'blog':
+            st.markdown(bleach.clean(content.content), unsafe_allow_html=True)
+        else:
+            st.markdown(f"<b>Problem:</b> {bleach.clean(content.problem)}", unsafe_allow_html=True)
+            st.markdown(f"<b>Solution:</b> {bleach.clean(content.solution)}", unsafe_allow_html=True)
+            st.markdown(f"<b>Results:</b> {bleach.clean(content.results)}", unsafe_allow_html=True)
+
+        if content.tags:
+            st.markdown(
+                f"<p><b>Tags:</b> {', '.join(bleach.clean(tag) for tag in content.tags)}</p>", unsafe_allow_html=True)
+
+        if content.media:
+            st.subheader("Media Gallery")
+            cols = st.columns(3)
+            for idx, media_id in enumerate(content.media):
+                media = dm.get_media(username, media_id)
+                if media:
+                    with cols[idx % 3]:
+                        if media.type == 'image':
+                            st.image(base64.b64decode(media.content), caption=bleach.clean(media.filename), width=200)
+                        elif media.type == 'video':
+                            st.video(base64.b64decode(media.content))
+                        elif media.type == 'gif':
+                            st.image(base64.b64decode(media.content), caption="")
+
+        media_items = [dm.get_media(username, mid) for mid in content.media]
+        pdf_data = export_to_pdf(content_type, content, [m for m in media_items if m])
+        st.download_button(
+            label="Download as PDF",
+            data=pdf_data,
+            file_name=f"{bleach.clean(content.title)}.pdf",
+            mime="application/pdf"
+        )
+
+        st.subheader("Comments")
+        comments = get_comments(content_type, content_id)
+        for comment in comments:
+            st.markdown('<div class="comment-card">', unsafe_allow_html=True)
+            st.markdown(f"""
+            <p><strong>{bleach.clean(comment.username)}</strong> | {comment.created_at.strftime('%B %d, %Y %H:%M')}</p>
+            <p>{bleach.clean(comment.comment)}</p>
+            """, unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        if st.session_state.authenticated:
+            with st.form(f"comment_form_{content_id}", clear_on_submit=True):
+                comment_text = st.text_area("Add a Comment", placeholder="Write your comment here...", height=100)
+                if st.form_submit_button("Post Comment"):
+                    if comment_text:
+                        dm.save_comment(content_type, content_id, st.session_state.username, comment_text)
+                        st.success("Comment posted!")
+                        st.rerun()
+                    else:
+                        st.error("Comment cannot be empty!")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def edit_content():
+    if 'edit_content' not in st.session_state:
+        st.error("No content selected for editing!")
+        return
+
+    content_type = st.session_state.edit_content['type']
+    content_id = st.session_state.edit_content['id']
+
+    with Session() as session:
+        if content_type == 'blog':
+            content = session.query(Blog).filter_by(id=content_id).first()
+        else:
+            content = session.query(CaseStudy).filter_by(id=content_id).first()
+
+        if not content:
+            st.error("Content not found!")
+            return
+
+        st.markdown(f"""
+        <div class="header">
+            <h1>✎ Edit {content_type.capitalize()}</h1>
+        </div>
+        <div class="container">
+        """, unsafe_allow_html=True)
+
+        if content_type == 'blog':
+            title = st.text_input("Blog Title", value=content.title, key="edit_title")
+            content_text = st.text_area("Content", value=content.content, height=300, key="edit_content")
+            tags = st.text_input("Tags (comma-separated)", value=", ".join(content.tags), key="edit_tags")
+            font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"], index=[
+                                "Inter", "Roboto", "Merriweather", "Lora"].index(content.font), key="edit_font")
+            is_published = st.checkbox("Publish", value=content.is_published, key="edit_publish")
+            uploaded_files = st.file_uploader("Upload New Media", accept_multiple_files=True, type=[
+                                              'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="edit_media")
+
+            media_ids = content.media
+            if uploaded_files:
+                for file in uploaded_files:
+                    media_id = dm.save_media(st.session_state.username, file)
+                    media_ids.append(media_id)
+
+            if st.button("Update Blog", type="primary"):
+                content.title = bleach.clean(title)
+                content.content = bleach.clean(content_text)
+                content.tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
+                content.font = font
+                content.media = media_ids
+                content.is_published = is_published
+                content.updated_at = datetime.utcnow()
+                session.commit()
+                st.success("Blog updated!")
+                st.rerun()
+
+        else:
+            title = st.text_input("Title", value=content.title, key="edit_title")
+            problem = st.text_area("Problem", value=content.problem, height=150, key="edit_problem")
+            solution = st.text_area("Solution", value=content.solution, height=150, key="edit_solution")
+            results = st.text_area("Results", value=content.results, height=150, key="edit_results")
+            tags = st.text_input("Tags (comma-separated)", value=", ".join(content.tags), key="edit_tags")
+            font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"], key="edit_content")
+            index = ["Inter", "Roboto", "Merriweather", "Lora"].index(content.font), key = "edit_font"
+            is_published = st.checkbox("Publish", value=content.is_published, key="edit_publish")
+            uploaded_files = st.file_uploader("Upload New Media", accept_multiple_files=True, type=[
+                                              'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="edit_media")
+
+            media_ids = content.media
+            if uploaded_files:
+                for file in uploaded_files:
+                    media_id = dm.save_media(st.session_state.username, file)
+                    media_ids.append(media_id)
+
+            if st.button("Update Case Study", type="primary"):
+                content.title = bleach.clean(title)
+                content.problem = bleach.clean(problem)
+                content.solution = bleach.clean(solution)
+                content.results = bleach.clean(results)
+                content.tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
+                content.font = font
+                content.media = media_ids
+                content.is_published = is_published
+                content.updated_at = datetime.utcnow()
+                session.commit()
+                st.success("Case study updated!")
+                st.rerun()
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # Main Function
+
+
+def get_data_manager():
+    return DataManager()
 
 
 def enhanced_main():
@@ -1514,46 +1347,56 @@ def enhanced_main():
 
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
+        st.session_state.username = None
+        st.session_state.user_password = None
 
     start_time = time.time()
-    page = st.query_params.get('page', ['main'])[0]
-    username = st.query_params.get('username', [''])[0]
+    query_params = st.query_params
+    page = query_params.get('page', [''])[0]
+    username = query_params.get('username', [''])[0]
+    content_type = query_params.get('content_type', [''])[0]
+    content_id = query_params.get('content_id', [''])[0]
 
-    if page == 'profile' and username:
-        profile_view(username)
-        st.write(f"Profile page loaded in {time.time() - start_time:.2f} seconds")
+    if page == 'content' and username and content_type and content_id:
+        content_view()
+        st.write(f"Content view took {time.time() - start_time:.2f} seconds")
         return
 
     if not st.session_state.authenticated:
         login_page()
-        st.write(f"Login page loaded in {time.time() - start_time:.2f} seconds")
+        st.write(f"Login page took {time.time() - start_time:.2f} seconds")
         return
 
     with st.sidebar:
-        st.markdown('<div class="sidebar-title">🌌 Galaxy Blog</div>',
-                    unsafe_allow_html=True)
-        page = st.selectbox(
-            "Navigate",
-            ["Main Page", "Write Blog", "Create Case Study", "Logout"],
-            key="nav_select"
-        )
+        st.markdown('<div class="sidebar-title">🌌 GalaxyWrite</div>', unsafe_allow_html=True)
+        page_options = [
+            "Main Page",
+            "Dashboard",
+            "Write Blog",
+            "Create Case Study",
+            "My Content",
+            "Templates",
+            "Analytics",
+            "Search & Filter",
+            "Profile Settings",
+            "Export Content",
+            "Logout"
+        ]
+        page = st.selectbox("Navigate", options=page_options, key="nav_select")
         st.markdown(
-            f'<p class="text-lg font-semibold">👋 Welcome, {st.session_state.username}!</p>',
-            unsafe_allow_html=True)
+            f'<p class="text-lg font-semibold">👋 Welcome, {st.session_state.username}!</p>', unsafe_allow_html=True)
         dm = get_data_manager()
         user_blogs = dm.get_user_blogs(st.session_state.username)
         user_cases = dm.get_user_case_studies(st.session_state.username)
-        st.markdown(f'<p>📖 <strong>Blogs:</strong> {len(user_blogs)}</p>',
-                    unsafe_allow_html=True)
-        st.markdown(f'<p>📚 <strong>Case Studies:</strong> {len(user_cases)}</p>',
-                    unsafe_allow_html=True)
-        total_views = sum(blog.views for blog in user_blogs) + sum(
-            case.views for case in user_cases)
-        st.markdown(f'<p>👀 <strong>Total Views:</strong> {total_views}</p>',
-                    unsafe_allow_html=True)
+        st.markdown(f'<p>📖 <strong>Blogs:</strong> {len(user_blogs)}</p>', unsafe_allow_html=True)
+        st.markdown(f'<p>📚 <strong>Case Studies:</strong> {len(user_cases)}</p>', unsafe_allow_html=True)
+        total_views = sum(blog.views for blog in user_blogs) + sum(case.views for case in user_cases)
+        st.markdown(f'<p>👀 <strong>Total Views:</strong> {total_views}</p>', unsafe_allow_html=True)
         if st.button("🚪 Logout", key="logout_btn", type="primary"):
             st.session_state.authenticated = False
             st.session_state.username = None
+            st.session_state.user_password = None
+            st.query_params.clear()
             st.rerun()
 
     if page == "Main Page":
@@ -1576,18 +1419,24 @@ def enhanced_main():
         profile_settings()
     elif page == "Export Content":
         export_content()
+    elif page == "Edit Content":
+        edit_content()
     elif page == "Logout":
         st.session_state.authenticated = False
         st.session_state.username = None
+        st.session_state.user_password = None
+        st.query_params.clear()
         st.rerun()
 
+    st.write(f"Page {page} loaded in {time.time() - start_time:.2f} seconds")
     st.markdown("""
     <div class="text-center text-gray-400 py-4">
         <p>GalaxyWrite - Your Cosmic Blogging Platform</p>
-        <p>Built with 🌠 by passionate creators</p>
+        <p>Built with 🌠 by passionate developers</p>
     </div>
     """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
+    dm = get_data_manager()
     enhanced_main()
