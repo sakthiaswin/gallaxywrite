@@ -12,6 +12,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Index,
+    and_,
 )
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 from datetime import datetime
@@ -85,7 +86,7 @@ class User(Base):
     case_studies = relationship("CaseStudy", back_populates="user")
     comments = relationship("Comment", back_populates="user")
     media = relationship("Media", back_populates="user")
-    __table_args__ = (Index('idx_user_username', 'username'),)
+    __tablename__ = (Index('idx_user_username', 'username'),)
 
 
 class Blog(Base):
@@ -106,7 +107,12 @@ class Blog(Base):
     is_published = Column(Boolean, default=True)
     user = relationship("User", back_populates="blogs")
     comments = relationship("Comment", back_populates="blog")
-    __table_args__ = (Index('idx_blog_username', 'username', 'content_type'),)
+    __tablename__ = (Index('idx_blog_username', 'username', 'content_type'),)
+    comments = relationship(
+        "Comment",
+        back_populates="blog",
+        primaryjoin="and_(Blog.id == Comment.content_id, Comment.content_type == 'blog')"
+    )
 
 
 class CaseStudy(Base):
@@ -129,7 +135,12 @@ class CaseStudy(Base):
     is_published = Column(Boolean, default=True)
     user = relationship("User", back_populates="case_studies")
     comments = relationship("Comment", back_populates="case_study")
-    __table_args__ = (Index('idx_case_username', 'username', 'content_type'),)
+    __tablename__ = (Index('idx_case_username', 'username', 'content_type'),)
+    comments = relationship(
+        "Comment",
+        back_populates="case_study",
+        primaryjoin="and_(CaseStudy.id == Comment.content_id, Comment.content_type == 'case_study')"
+    )
 
 
 class Media(Base):
@@ -142,7 +153,7 @@ class Media(Base):
     filename = Column(Text, nullable=False)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="media")
-    __table_args__ = (Index('idx_media_username', 'username'),)
+    __tablename__ = (Index('idx_media_username', 'username'),)
 
 
 class Comment(Base):
@@ -157,7 +168,9 @@ class Comment(Base):
     user = relationship("User", back_populates="comments")
     blog = relationship("Blog", back_populates="comments")
     case_study = relationship("CaseStudy", back_populates="comments")
-    __table_args__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
+    __tablename__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
+    blog = relationship("Blog", back_populates="comments")
+    case_study = relationship("CaseStudy", back_populates="comments")
 
 
 engine = get_db_engine()
