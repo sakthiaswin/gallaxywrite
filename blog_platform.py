@@ -1307,8 +1307,9 @@ def edit_content():
             solution = st.text_area("Solution", value=content.solution, height=150, key="edit_solution")
             results = st.text_area("Results", value=content.results, height=150, key="edit_results")
             tags = st.text_input("Tags (comma-separated)", value=", ".join(content.tags), key="edit_tags")
-            font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"], key="edit_content")
-            index == ["Inter", "Roboto", "Merriweather", "Lora"].index(content.font), key = "edit_font"
+            font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"],
+                                index=["Inter", "Roboto", "Merriweather", "Lora"].index(content.font),
+                                key="edit_font")
             is_published = st.checkbox("Publish", value=content.is_published, key="edit_publish")
             uploaded_files = st.file_uploader("Upload New Media", accept_multiple_files=True, type=[
                                               'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="edit_media")
@@ -1334,7 +1335,6 @@ def edit_content():
                 st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
-
 # Main Function
 
 
