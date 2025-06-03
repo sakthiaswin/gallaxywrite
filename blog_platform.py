@@ -438,7 +438,7 @@ def login_page():
     </div>
     <div class="container">
         <div class="card max-w-md mx-auto">
-            <h2 class="text-2xl font-bold text-center mb-6">Welcome to GalaxyWrite</h2>
+            <h2 class="text-2xl font-semibold mb-6 text-center">Welcome to GalaxyWrite</h2>
     """, unsafe_allow_html=True)
 
     credentials = {
@@ -458,7 +458,8 @@ def login_page():
         cookie_expiry_days=30
     )
 
-    name, authentication_status, username = authenticator.login('Login', 'main')
+    # Updated login call
+    name, authentication_status, username = authenticator.login('Login', key='login')
 
     if authentication_status:
         st.session_state.authenticated = True
