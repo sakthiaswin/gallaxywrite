@@ -388,22 +388,22 @@ class DataManager:
         return comment_id
 
     @st.cache_data(ttl=3600)
-    def get_user_blogs(self, username):
+    def get_user_blogs(_self, username):
         start_time = time.time()
-        with self.session() as session:
-            blogs = session.query(Blog).filter_by(username=username).limit(30).all()  # Changed to 30
+        with _self.session() as session:
+            blogs = session.query(Blog).filter_by(username=username).limit(30).all()
         st.write(f"get_user_blogs took {time.time() - start_time:.2f} seconds")
         return blogs
 
     @st.cache_data(ttl=3600)
-    def get_user_case_studies(self, username):
+    def get_user_case_studies(_self, username):
         start_time = time.time()
-        with self.session() as session:
-            cases = session.query(CaseStudy).filter_by(username=username).limit(30).all()  # Changed to 30
+        with _self.session() as session:
+            cases = session.query(CaseStudy).filter_by(username=username).limit(30).all()
         st.write(f"get_user_case_studies took {time.time() - start_time:.2f} seconds")
         return cases
-
     # Cache data queries
+
     @st.cache_data(ttl=3600)  # Cache for 1 hour
     def get_all_public_content():
         start_time = time.time()
@@ -422,12 +422,20 @@ class DataManager:
         return all_content
 
     @st.cache_data(ttl=3600)
-    def get_media(self, username, file_id):
+    def get_media(_self, username, file_id):
         start_time = time.time()
-        with self.session() as session:
+        with _self.session() as session:
             media = session.query(Media).filter_by(username=username, id=file_id).first()
         st.write(f"get_media took {time.time() - start_time:.2f} seconds")
         return media
+
+    @st.cache_data(ttl=3600)
+    def get_user_profile(_self, username):
+        start_time = time.time()
+        with _self.session() as session:
+            user = session.query(User).filter_by(username=username).first()
+        st.write(f"get_user_profile took {time.time() - start_time:.2f} seconds")
+        return user.profile if user else {}
 
     @st.cache_data(ttl=3600)
     def get_comments(content_type, content_id):
@@ -437,12 +445,6 @@ class DataManager:
                                                         content_id=content_id).limit(30).all()  # Changed to 30
         st.write(f"get_comments took {time.time() - start_time:.2f} seconds")
         return comments
-
-    @st.cache_data(ttl=3600)
-    def get_user_profile(self, username):
-        with self.session() as session:
-            user = session.query(User).filter_by(username=username).first()
-        return user.profile if user else {}
 
 
 @st.cache_resource
