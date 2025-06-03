@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     and_,
+    foreign,
 )
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 from datetime import datetime
@@ -82,10 +83,10 @@ class User(Base):
     profile = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
-    blogs = relationship("Blog")  # Remove back_populates
-    case_studies = relationship("CaseStudy")  # Remove back_populates
-    comments = relationship("Comment")  # Remove back_populates
-    media = relationship("Media")  # Remove back_populates
+    blogs = relationship("Blog", back_populates="user", overlaps="user")
+    case_studies = relationship("CaseStudy", back_populates="user", overlaps="user")
+    comments = relationship("Comment", back_populates="user", overlaps="user")
+    media = relationship("Media", back_populates="user", overlaps="user")
     __table_args__ = (Index('idx_user_username', 'username'),)
 
 
@@ -105,11 +106,16 @@ class Blog(Base):
     views = Column(Integer, default=0)
     public_link = Column(String(255))
     is_published = Column(Boolean, default=True)
-    user = relationship("User")  # Remove back_populates
+    user = relationship("User", back_populates="blogs", overlaps="blogs")
     comments = relationship(
         "Comment",
-        primaryjoin="and_(Blog.id == Comment.content_id, Comment.content_type == 'blog')"
-    )  # Remove back_populates
+        back_populates="blog",
+        primaryjoin=and_(
+            "Blog.id == foreign(Comment.content_id)",
+            "Comment.content_type == 'blog'"
+        )
+    )
+    media_rel = relationship("Media", back_populates="blog")
     __table_args__ = (Index('idx_blog_username', 'username', 'content_type'),)
 
 
@@ -131,11 +137,16 @@ class CaseStudy(Base):
     views = Column(Integer, default=0)
     public_link = Column(String(255))
     is_published = Column(Boolean, default=True)
-    user = relationship("User")  # Remove back_populates
+    user = relationship("User", back_populates="case_studies", overlaps="case_studies")
     comments = relationship(
         "Comment",
-        primaryjoin="and_(CaseStudy.id == Comment.content_id, Comment.content_type == 'case_study')"
-    )  # Remove back_populates
+        back_populates="case_study",
+        primaryjoin=and_(
+            "CaseStudy.id == foreign(Comment.content_id)",
+            "Comment.content_type == 'case_study'"
+        )
+    )
+    media_rel = relationship("Media", back_populates="case_study")
     __table_args__ = (Index('idx_case_username', 'username', 'content_type'),)
 
 
@@ -150,14 +161,22 @@ class Media(Base):
     content = Column(Text, nullable=False)
     filename = Column(String(255), nullable=False)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
-    user = relationship("User")  # Remove back_populates
+    user = relationship("User", back_populates="media", overlaps="media")
     blog = relationship(
         "Blog",
-        primaryjoin="and_(Media.content_id == Blog.id, Media.content_type == 'blog')"
+        back_populates="media_rel",
+        primaryjoin=and_(
+            "Media.content_id == foreign(Blog.id)",
+            "Media.content_type == 'blog'"
+        )
     )
     case_study = relationship(
         "CaseStudy",
-        primaryjoin="and_(Media.content_id == CaseStudy.id, Media.content_type == 'case_study')"
+        back_populates="media_rel",
+        primaryjoin=and_(
+            "Media.content_id == foreign(CaseStudy.id)",
+            "Media.content_type == 'case_study'"
+        )
     )
     __table_args__ = (Index('idx_media_username', 'username'),)
 
@@ -171,9 +190,9 @@ class Comment(Base):
     username = Column(String(50), nullable=False)
     comment = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    user = relationship("User")  # Remove back_populates
-    blog = relationship("Blog")  # Remove back_populates
-    case_study = relationship("CaseStudy")  # Remove back_populates
+    user = relationship("User")
+    blog = relationship("Blog")
+    case_study = relationship("CaseStudy")
     __table_args__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
 
 
