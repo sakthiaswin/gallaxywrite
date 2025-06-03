@@ -13,9 +13,8 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     and_,
-    foreign,
 )
-from sqlalchemy.orm import sessionmaker, relationship, declarative_base
+from sqlalchemy.orm import sessionmaker, relationship, declarative_base, foreign
 from datetime import datetime
 import uuid
 import urllib.parse
@@ -190,9 +189,9 @@ class Comment(Base):
     username = Column(String(50), nullable=False)
     comment = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    user = relationship("User")
-    blog = relationship("Blog")
-    case_study = relationship("CaseStudy")
+    user = relationship("User", back_populates="comments")
+    blog = relationship("Blog", back_populates="comments")
+    case_study = relationship("CaseStudy", back_populates="comments")
     __table_args__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
 
 
