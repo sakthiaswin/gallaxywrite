@@ -280,7 +280,7 @@ Session = get_db_session(engine)
 
 class DataManager:
     def __init__(self):
-        self.session = Session()
+        self.session_factory = Session  # Store the sessionmaker factory
 
     def hash_password(self, password):
         return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -291,27 +291,29 @@ class DataManager:
     def register_user(self, username, password, email):
         username = bleach.clean(username)
         email = bleach.clean(email)
-        if self.session.query(User).filter_by(username=username).first():
-            return False
-        user = User(
-            username=username,
-            password=self.hash_password(password),
-            email=email,
-            profile={
-                'bio': '',
-                'avatar': '',
-                'social_links': {},
-                'preferred_font': 'Inter'
-            }
-        )
-        self.session.add(user)
-        self.session.commit()
+        with self.session_factory() as session:
+            if session.query(User).filter_by(username=username).first():
+                return False
+            user = User(
+                username=username,
+                password=self.hash_password(password),
+                email=email,
+                profile={
+                    'bio': '',
+                    'avatar': '',
+                    'social_links': {},
+                    'preferred_font': 'Inter'
+                }
+            )
+            session.add(user)
+            session.commit()
         return True
 
     def authenticate_user(self, username, password):
-        user = self.session.query(User).filter_by(username=username).first()
-        if user and self.check_password(password, user.password):
-            return True
+        with self.session_factory() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if user and self.check_password(password, user.password):
+                return True
         return False
 
     def save_blog(self, username, title, content, tags="", media=None, font='Inter'):
@@ -320,18 +322,19 @@ class DataManager:
         tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
         blog_id = str(uuid.uuid4())
         public_link = f"{APP_URL}/blog/{urllib.parse.quote(username)}/{blog_id}"
-        blog = Blog(
-            id=blog_id,
-            username=username,
-            title=title,
-            content=content,
-            tags=tags,
-            media=media or [],
-            font=font,
-            public_link=public_link
-        )
-        self.session.add(blog)
-        self.session.commit()
+        with self.session_factory() as session:
+            blog = Blog(
+                id=blog_id,
+                username=username,
+                title=title,
+                content=content,
+                tags=tags,
+                media=media or [],
+                font=font,
+                public_link=public_link
+            )
+            session.add(blog)
+            session.commit()
         return blog_id
 
     def save_case_study(self, username, title, problem, solution, results, tags="", media=None, font='Inter'):
@@ -342,49 +345,52 @@ class DataManager:
         tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
         case_id = str(uuid.uuid4())
         public_link = f"{APP_URL}/case_study/{urllib.parse.quote(username)}/{case_id}"
-        case_study = CaseStudy(
-            id=case_id,
-            username=username,
-            title=title,
-            problem=problem,
-            solution=solution,
-            results=results,
-            tags=tags,
-            media=media or [],
-            font=font,
-            public_link=public_link
-        )
-        self.session.add(case_study)
-        self.session.commit()
+        with self.session_factory() as session:
+            case_study = CaseStudy(
+                id=case_id,
+                username=username,
+                title=title,
+                problem=problem,
+                solution=solution,
+                results=results,
+                tags=tags,
+                media=media or [],
+                font=font,
+                public_link=public_link
+            )
+            session.add(case_study)
+            session.commit()
         return case_id
 
     def save_media(self, username, file):
         file_type = 'image' if file.type.startswith('image') else 'video' if file.type.startswith('video') else 'gif'
         file_content = base64.b64encode(file.read()).decode('utf-8')
         file_id = str(uuid.uuid4())
-        media = Media(
-            id=file_id,
-            username=username,
-            type=file_type,
-            content=file_content,
-            filename=bleach.clean(file.name)
-        )
-        self.session.add(media)
-        self.session.commit()
+        with self.session_factory() as session:
+            media = Media(
+                id=file_id,
+                username=username,
+                type=file_type,
+                content=file_content,
+                filename=bleach.clean(file.name)
+            )
+            session.add(media)
+            session.commit()
         return file_id
 
     def save_comment(self, content_type, content_id, username, comment):
         comment = bleach.clean(comment)
         comment_id = str(uuid.uuid4())
-        comment_obj = Comment(
-            id=comment_id,
-            content_type=content_type,
-            content_id=content_id,
-            username=username,
-            comment=comment
-        )
-        self.session.add(comment_obj)
-        self.session.commit()
+        with self.session_factory() as session:
+            comment_obj = Comment(
+                id=comment_id,
+                content_type=content_type,
+                content_id=content_id,
+                username=username,
+                comment=comment
+            )
+            session.add(comment_obj)
+            session.commit()
         return comment_id
 
     @st.cache_data(ttl=3600)
