@@ -458,8 +458,8 @@ def login_page():
         cookie_expiry_days=30
     )
 
-    # Updated login call
-    name, authentication_status, username = authenticator.login('Login', key='login')
+    # Reverted login call to use location parameter
+    name, authentication_status, username = authenticator.login('Login', 'main')
 
     if authentication_status:
         st.session_state.authenticated = True
@@ -498,7 +498,6 @@ def login_page():
                 st.error("Username already exists!")
 
     st.markdown("</div></div>", unsafe_allow_html=True)
-
 # Main Page
 
 
