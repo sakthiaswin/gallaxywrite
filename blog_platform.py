@@ -388,52 +388,60 @@ class DataManager:
         return comment_id
 
     @st.cache_data(ttl=3600)
-    def get_user_blogs(_self, username):
+    def get_user_blogs(self, username):
         start_time = time.time()
-        blogs = _self.session.query(Blog).filter_by(username=username).limit(50).all()
+        with self.session() as session:
+            blogs = session.query(Blog).filter_by(username=username).limit(30).all()  # Changed to 30
         st.write(f"get_user_blogs took {time.time() - start_time:.2f} seconds")
         return blogs
 
     @st.cache_data(ttl=3600)
-    def get_user_case_studies(_self, username):
+    def get_user_case_studies(self, username):
         start_time = time.time()
-        cases = _self.session.query(CaseStudy).filter_by(username=username).limit(50).all()
+        with self.session() as session:
+            cases = session.query(CaseStudy).filter_by(username=username).limit(30).all()  # Changed to 30
         st.write(f"get_user_case_studies took {time.time() - start_time:.2f} seconds")
         return cases
 
     # Cache data queries
     @st.cache_data(ttl=3600)  # Cache for 1 hour
-    def get_all_public_content(_session):
+    def get_all_public_content():
         start_time = time.time()
-        blogs = _session.query(Blog).limit(50).all()  # Limit to 50 entries
-        case_studies = _session.query(CaseStudy).limit(50).all()
-        all_content = [
-            {'type': 'blog', 'author': blog.username, 'content': blog}
-            for blog in blogs
-        ] + [
-            {'type': 'case_study', 'author': case.username, 'content': case}
-            for case in case_studies
-        ]
-        all_content = sorted(all_content, key=lambda x: x['content'].created_at, reverse=True)
+        with Session() as session:
+            blogs = session.query(Blog).limit(30).all()  # Changed to 30
+            case_studies = session.query(CaseStudy).limit(30).all()  # Changed to 30
+            all_content = [
+                {'type': 'blog', 'author': blog.username, 'content': blog}
+                for blog in blogs
+            ] + [
+                {'type': 'case_study', 'author': case.username, 'content': case}
+                for case in case_studies
+            ]
+            all_content = sorted(all_content, key=lambda x: x['content'].created_at, reverse=True)
         st.write(f"get_all_public_content took {time.time() - start_time:.2f} seconds")
         return all_content
 
     @st.cache_data(ttl=3600)
-    def get_media(_self, username, file_id):
+    def get_media(self, username, file_id):
         start_time = time.time()
-        media = _self.session.query(Media).filter_by(username=username, id=file_id).first()
+        with self.session() as session:
+            media = session.query(Media).filter_by(username=username, id=file_id).first()
         st.write(f"get_media took {time.time() - start_time:.2f} seconds")
         return media
 
     @st.cache_data(ttl=3600)
-    def get_comments(_session, content_type, content_id):
+    def get_comments(content_type, content_id):
         start_time = time.time()
-        comments = _session.query(Comment).filter_by(content_type=content_type, content_id=content_id).limit(100).all()
+        with Session() as session:
+            comments = session.query(Comment).filter_by(content_type=content_type,
+                                                        content_id=content_id).limit(30).all()  # Changed to 30
         st.write(f"get_comments took {time.time() - start_time:.2f} seconds")
         return comments
 
+    @st.cache_data(ttl=3600)
     def get_user_profile(self, username):
-        user = self.session.query(User).filter_by(username=username).first()
+        with self.session() as session:
+            user = session.query(User).filter_by(username=username).first()
         return user.profile if user else {}
 
 
