@@ -1,7 +1,26 @@
+
+"""
+GalaxyWrite Blog Platform
+A comprehensive blogging platform with user management, content creation, media uploads,
+comments, likes, search, analytics, and admin tools.
+"""
+
 import streamlit as st
-import bcrypt
-import streamlit_authenticator as stauth
+import streamlit_authenticator as stauth  # pip install streamlit-authenticator
+import bleach
+import uuid
+import base64
+import urllib.parse
+import pandas as pd
+import re
+import json
+import time
+import logging
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy import (
+    ForeignKeyConstraint,
+    Table,
     create_engine,
     Column,
     Integer,
@@ -12,84 +31,92 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Index,
+    Float,
     and_,
+    or_,
+    text,
 )
-from sqlalchemy.orm import sessionmaker, relationship, declarative_base, foreign
-from datetime import datetime
-import uuid
-import urllib.parse
-import re
-import base64
-import time
-from typing import List, Dict, Optional
-import hashlib
-import bleach
+from sqlalchemy.orm import foreign, relationship, sessionmaker, declarative_base
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from sqlalchemy.sql import func
+from PIL import Image
+import io
+from pathlib import Path
 
-# Lazy-load heavy libraries
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-
-def import_pdf_libraries():
-    from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
-    from reportlab.lib.styles import getSampleStyleSheet
-    from io import BytesIO
-    return letter, SimpleDocTemplate, Paragraph, Spacer, Image, getSampleStyleSheet, BytesIO
-
-
-APP_URL = "https://gallaxywrite.streamlit.app/"
-
-# Page configuration
-st.set_page_config(
-    page_title="GalaxyWrite",
-    page_icon="🌌",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'Get Help': 'https://github.com/gallaxywrite/support',
-        'Report a bug': 'https://github.com/gallaxywrite/issues',
-        'About': "GalaxyWrite - Your Cosmic Blogging Platform"
-    }
-)
-# Cache database engine and session factory
-
-
-@st.cache_resource
-def get_db_engine():
-    start_time = time.time()
-    engine = create_engine('sqlite:///galaxywrite.db', echo=False)
-    st.write(f"get_db_engine took{time.time() - start_time:.2f} seconds")
-    return engine
-
-
-@st.cache_resource
-def get_db_session(_engine):
-    start_time = time.time()
-    Session = sessionmaker(bind=_engine)
-    st.write(f"get_db_session took{time.time() - start_time:.2f} seconds")
-    return Session
-
-
-# Database setup
 Base = declarative_base()
+APP_URL = "https://gallaxywrite.streamlit.app"
+
+# Database Setup
+
+
+def get_db_engine():
+    """
+    Initialize SQLAlchemy engine for SQLite database.
+    Returns:
+        Engine: SQLAlchemy engine instance.
+    """
+    return create_engine("sqlite:///galaxywrite.db", echo=False)
+
+
+def get_db_session(engine):
+    """
+    Create session factory for database interactions.
+    Args:
+        engine: SQLAlchemy engine instance.
+    Returns:
+        sessionmaker: Session factory.
+    """
+    return sessionmaker(bind=engine)
+
+# Models
 
 
 class User(Base):
+    """
+    User model for storing user information.
+    """
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
     username = Column(String(50), unique=True, nullable=False)
     password = Column(String(255), nullable=False)
-    email = Column(String(100), nullable=False)
+    email = Column(String(100), unique=True, nullable=False)
     profile = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False)
+    last_login = Column(DateTime)
     blogs = relationship("Blog", back_populates="user", overlaps="user")
     case_studies = relationship("CaseStudy", back_populates="user", overlaps="user")
     comments = relationship("Comment", back_populates="user", overlaps="user")
     media = relationship("Media", back_populates="user", overlaps="user")
+    likes = relationship("Like", back_populates="user")
+    notifications = relationship("Notification", back_populates="user")
+    analytics_events = relationship("AnalyticsEvent", back_populates="user")
+    drafts = relationship("Draft", back_populates="user")
     __table_args__ = (Index('idx_user_username', 'username'),)
 
 
+class Tag(Base):
+    """
+    Tag model for categorizing content.
+    """
+    __tablename__ = 'tags'
+    id = Column(String(36), primary_key=True)
+    name = Column(String(50), unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    blogs = relationship("Blog", secondary="blog_tags", back_populates="tag_objects")
+    case_studies = relationship("CaseStudy", secondary="case_study_tags", back_populates="tag_objects")
+    __table_args__ = (Index('idx_tag_name', 'name'),)
+
+
 class Blog(Base):
+    """
+    Blog model for blog posts.
+    """
     __tablename__ = 'blogs'
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
@@ -105,20 +132,27 @@ class Blog(Base):
     views = Column(Integer, default=0)
     public_link = Column(String(255))
     is_published = Column(Boolean, default=True)
+    is_draft = Column(Boolean, default=False)
     user = relationship("User", back_populates="blogs", overlaps="blogs")
     comments = relationship(
         "Comment",
         back_populates="blog",
         primaryjoin=and_(
-            "Blog.id == foreign(Comment.content_id)",
-            "Comment.content_type == 'blog'"
+            text("Blog.id == foreign(Comment.content_id)"),
+            text("Comment.content_type == 'blog'")
         )
     )
     media_rel = relationship("Media", back_populates="blog")
+    likes = relationship("Like", back_populates="blog")
+    tag_objects = relationship("Tag", secondary="blog_tags", back_populates="blogs")
+    drafts = relationship("Draft", back_populates="blog")
     __table_args__ = (Index('idx_blog_username', 'username', 'content_type'),)
 
 
 class CaseStudy(Base):
+    """
+    CaseStudy model for case studies.
+    """
     __tablename__ = 'case_studies'
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
@@ -136,20 +170,27 @@ class CaseStudy(Base):
     views = Column(Integer, default=0)
     public_link = Column(String(255))
     is_published = Column(Boolean, default=True)
+    is_draft = Column(Boolean, default=False)
     user = relationship("User", back_populates="case_studies", overlaps="case_studies")
     comments = relationship(
         "Comment",
         back_populates="case_study",
         primaryjoin=and_(
-            "CaseStudy.id == foreign(Comment.content_id)",
-            "Comment.content_type == 'case_study'"
+            text("CaseStudy.id == foreign(Comment.content_id)"),
+            text("Comment.content_type == 'case_study'")
         )
     )
     media_rel = relationship("Media", back_populates="case_study")
+    likes = relationship("Like", back_populates="case_study")
+    tag_objects = relationship("Tag", secondary="case_study_tags", back_populates="case_studies")
+    drafts = relationship("Draft", back_populates="case_study")
     __table_args__ = (Index('idx_case_username', 'username', 'content_type'),)
 
 
 class Media(Base):
+    """
+    Media model for uploaded files.
+    """
     __tablename__ = 'media'
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
@@ -165,22 +206,25 @@ class Media(Base):
         "Blog",
         back_populates="media_rel",
         primaryjoin=and_(
-            "Media.content_id == foreign(Blog.id)",
-            "Media.content_type == 'blog'"
+            text("Media.content_id == foreign(Blog.id)"),
+            text("Media.content_type == 'blog'")
         )
     )
     case_study = relationship(
         "CaseStudy",
         back_populates="media_rel",
         primaryjoin=and_(
-            "Media.content_id == foreign(CaseStudy.id)",
-            "Media.content_type == 'case_study'"
+            text("Media.content_id == foreign(CaseStudy.id)"),
+            text("Media.content_type == 'case_study'")
         )
     )
     __table_args__ = (Index('idx_media_username', 'username'),)
 
 
 class Comment(Base):
+    """
+    Comment model for content comments.
+    """
     __tablename__ = 'comments'
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
@@ -195,1285 +239,2129 @@ class Comment(Base):
     __table_args__ = (Index('idx_comment_content', 'content_type', 'content_id'),)
 
 
+class Like(Base):
+    """
+    Like model for content likes.
+    """
+    __tablename__ = 'likes'
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    content_type = Column(String(20), nullable=False)
+    content_id = Column(String(36), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="likes")
+    blog = relationship(
+        "Blog",
+        back_populates="likes",
+        primaryjoin="and_(Like.content_id == foreign(Blog.id), Like.content_type == 'blog')"
+    )
+    case_study = relationship(
+        "CaseStudy",
+        back_populates="likes",
+        primaryjoin="and_(Like.content_id == foreign(CaseStudy.id), Like.content_type == 'case_study')"
+    )
+    __table_args__ = (
+        Index('idx_like_content', 'content_type', 'content_id'),
+        ForeignKeyConstraint(['user_id'], ['users.id'], name='fk_like_user_id'),
+    )
+
+
+class Notification(Base):
+    """
+    Notification model for user alerts.
+    """
+    __tablename__ = 'notifications'
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    message = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    content_type = Column(String(20))
+    content_id = Column(String(36))
+    user = relationship("User", back_populates="notifications")
+    __table_args__ = (Index('idx_notification_user', 'user_id'),)
+
+
+class AnalyticsEvent(Base):
+    """
+    AnalyticsEvent model for tracking user interactions.
+    """
+    __tablename__ = 'analytics_events'
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    event_type = Column(String(50), nullable=False)
+    content_type = Column(String(20))
+    content_id = Column(String(36))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    metadata = Column(JSON, default={})
+    user = relationship("User", back_populates="analytics_events")
+    __table_args__ = (Index('idx_analytics_event', 'event_type', 'timestamp'),)
+
+
+class Draft(Base):
+    """
+    Draft model for content versions.
+    """
+    __tablename__ = 'drafts'
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    content_type = Column(String(20), nullable=False)
+    content_id = Column(String(36))
+    data = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="drafts")
+    blog = relationship("Blog", back_populates="drafts")
+    case_study = relationship("CaseStudy", back_populates="drafts")
+    __table_args__ = (Index('idx_draft_user', 'user_id', 'content_type'),)
+
+
+# Association Tables
+blog_tags = Table(
+    'blog_tags', Base.metadata,
+    Column('blog_id', String(36), ForeignKey('blogs.id'), primary_key=True),
+    Column('tag_id', String(36), ForeignKey('tags.id'), primary_key=True)
+)
+
+case_study_tags = Table(
+    'case_study_tags', Base.metadata,
+    Column('case_study_id', String(36), ForeignKey('case_studies.id'), primary_key=True),
+    Column('tag_id', String(36), ForeignKey('tags.id'), primary_key=True)
+)
+
+# Table Creation
 engine = get_db_engine()
 User.__table__.create(engine, checkfirst=True)
+Tag.__table__.create(engine, checkfirst=True)
 Blog.__table__.create(engine, checkfirst=True)
 CaseStudy.__table__.create(engine, checkfirst=True)
 Media.__table__.create(engine, checkfirst=True)
 Comment.__table__.create(engine, checkfirst=True)
+Like.__table__.create(engine, checkfirst=True)
+Notification.__table__.create(engine, checkfirst=True)
+AnalyticsEvent.__table__.create(engine, checkfirst=True)
+Draft.__table__.create(engine, checkfirst=True)
+blog_tags.create(engine, checkfirst=True)
+case_study_tags.create(engine, checkfirst=True)
 Session = get_db_session(engine)
-
-# Optimized Queries
-
-
-@st.cache_data(ttl=3600)
-def get_all_public_content():
-    start_time = time.time()
-    with Session() as session:
-        blogs = session.query(Blog).filter_by(is_published=True).limit(30).all()
-        case_studies = session.query(CaseStudy).filter_by(is_published=True).limit(30).all()
-        all_content = [
-            {'type': 'blog', 'author': blog.username, 'content': blog}
-            for blog in blogs
-        ] + [
-            {'type': 'case_study', 'author': case.username, 'content': case}
-            for case in case_studies
-        ]
-        all_content = sorted(all_content, key=lambda x: x['content'].created_at, reverse=True)
-    st.write(f"get_all_public_content took {time.time() - start_time:.2f} seconds")
-    return all_content
-
-
-@st.cache_data(ttl=3600)
-def get_comments(_content_type: str, content_id: str):
-    start_time = time.time()
-    with Session() as session:
-        comments = session.query(Comment).filter_by(content_type=_content_type, content_id=content_id).limit(10).all()
-    st.write(f"get_comments took {time.time() - start_time:.2f} seconds")
-    return comments
-
-
-@st.cache_data(ttl=3600)
-def search_content(query: str, filters: Dict = None) -> List[Dict]:
-    start_time = time.time()
-    with Session() as session:
-        search_pattern = f"%{query}%"
-        blog_query = session.query(Blog).filter(Blog.title.ilike(search_pattern) | Blog.content.ilike(search_pattern))
-        case_query = session.query(CaseStudy).filter(CaseStudy.title.ilike(
-            search_pattern) | CaseStudy.problem.ilike(search_pattern))
-        if filters:
-            if filters.get('content_type') == 'blog':
-                case_query = case_query.filter(False)
-            elif filters.get('content_type') == 'case_study':
-                blog_query = blog_query.filter(False)
-            if filters.get('author'):
-                blog_query = blog_query.filter(Blog.username == filters['author'])
-                case_query = case_query.filter(CaseStudy.username == filters['author'])
-            if filters.get('tags'):
-                blog_query = blog_query.filter(Blog.tags.contains(filters['tags']))
-                case_query = case_query.filter(CaseStudy.tags.contains(filters['tags']))
-        blogs = blog_query.limit(30).all()
-        case_studies = case_query.limit(30).all()
-        results = [
-            {'type': 'blog', 'author': blog.username, 'content': blog}
-            for blog in blogs
-        ] + [
-            {'type': 'case_study', 'author': case.username, 'content': case}
-            for case in case_studies
-        ]
-        results = sorted(results, key=lambda x: x['content'].created_at, reverse=True)
-    st.write(f"search_content took {time.time() - start_time:.2f} seconds")
-    return results
 
 # Data Manager
 
 
 class DataManager:
-    def __init__(self):
-        self.session_factory = Session
+    """
+    Manages database operations for the blog platform.
+    """
 
-    def hash_password(self, password: str) -> str:
-        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    def __init__(self, session_factory):
+        self.session_factory = session_factory
 
-    def check_password(self, password: str, hashed: str) -> bool:
-        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-
-    def register_user(self, username: str, password: str, email: str) -> bool:
-        username = bleach.clean(username)
-        email = bleach.clean(email)
-        with self.session_factory() as session:
-            if session.query(User).filter_by(username=username).first():
-                return False
-            if session.query(User).filter_by(email=email).first():
-                return False
-            user = User(
-                username=username,
-                password=self.hash_password(password),
-                email=email,
-                profile={
-                    'bio': '',
-                    'avatar': '',
-                    'social_links': {},
-                    'preferred_font': 'Inter',
-                    'theme': 'light',
-                    'notifications': {'email_comments': True, 'email_follows': False}
-                }
-            )
-            session.add(user)
-            session.commit()
-        return True
-
-    def authenticate_user(self, username: str, password: str) -> bool:
-        with self.session_factory() as session:
-            user = session.query(User).filter_by(username=username, is_active=True).first()
-            if user and self.check_password(password, user.password):
+    def save_user(self, username: str, password: str, email: str, is_admin: bool = False) -> bool:
+        """
+        Save a new user with hashed password.
+        Args:
+            username: User's unique username.
+            password: User's password.
+            email: User's email address.
+            is_admin: Whether the user is an admin.
+        Returns:
+            bool: True if saved successfully, False otherwise.
+        """
+        try:
+            with self.session_factory() as session:
+                hashed_password = stauth.Hasher([password]).generate()[0]
+                user = User(
+                    username=bleach.clean(username),
+                    password=hashed_password,
+                    email=bleach.clean(email),
+                    is_admin=is_admin
+                )
+                session.add(user)
+                session.commit()
+                logger.info(f"User {username} registered successfully")
                 return True
-        return False
+        except IntegrityError:
+            logger.error(f"User {username} or email {email} already exists")
+            return False
+        except SQLAlchemyError as e:
+            logger.error(f"Database error saving user: {str(e)}")
+            return False
 
-    def save_blog(self, username: str, title: str, content: str, tags: str = "", media: Optional[List[str]] = None, font: str = 'Inter', content_type: str = 'blog', is_published: bool = True) -> str:
+    def update_user_profile(self, username: str, profile: Dict[str, Any]) -> bool:
+        """
+        Update user profile information.
+        Args:
+            username: User's username.
+            profile: Dictionary of profile data.
+        Returns:
+            bool: True if updated successfully, False otherwise.
+        """
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    logger.error(f"User {username} not found")
+                    return False
+                user.profile = {**user.profile, **profile}
+                session.commit()
+                logger.info(f"Profile updated for user {username}")
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error updating profile for {username}: {str(e)}")
+            return False
+
+    def update_password(self, username: str, new_password: str) -> bool:
+        """
+        Update user password.
+        Args:
+            username: User's username.
+            new_password: New password.
+        Returns:
+            bool: True if updated successfully, False otherwise.
+        """
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    logger.error(f"User {username} not found")
+                    return False
+                user.password = stauth.Hasher([new_password]).generate()[0]
+                session.commit()
+                logger.info(f"Password updated for user {username}")
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error updating password for {username}: {str(e)}")
+            return False
+
+    def save_tag(self, name: str) -> str:
+        """
+        Save a new tag.
+        Args:
+            name: Tag name.
+        Returns:
+            str: Tag ID.
+        """
+        tag_id = str(uuid.uuid4())
+        try:
+            with self.session_factory() as session:
+                tag = Tag(id=tag_id, name=bleach.clean(name))
+                session.add(tag)
+                session.commit()
+                logger.info(f"Tag {name} saved with ID {tag_id}")
+                return tag_id
+        except IntegrityError:
+            with self.session_factory() as session:
+                tag = session.query(Tag).filter_by(name=bleach.clean(name)).first()
+                if tag:
+                    return tag.id
+                logger.error(f"Error saving tag {name}")
+                raise
+        except SQLAlchemyError as e:
+            logger.error(f"Error saving tag {name}: {str(e)}")
+            raise
+
+    def save_media(self, username: str, file, content_type: Optional[str] = None, content_id: Optional[str] = None) -> str:
+        """
+        Save media file with base64 encoding.
+        Args:
+            username: Uploader's username.
+            file: Uploaded file object.
+            content_type: Associated content type (blog/case_study).
+            content_id: Associated content ID.
+        Returns:
+            str: Media ID.
+        """
+        file_type = 'image' if file.type.startswith('image') else 'video' if file.type.startswith('video') else 'gif'
+        file_content = base64.b64encode(file.read()).decode('utf-8')
+        file_id = str(uuid.uuid4())
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    raise ValueError("User not found")
+                media = Media(
+                    id=file_id,
+                    user_id=user.id,
+                    username=username,
+                    content_type=content_type,
+                    content_id=content_id,
+                    type=file_type,
+                    content=file_content,
+                    filename=bleach.clean(file.name)
+                )
+                session.add(media)
+                session.commit()
+                logger.info(f"Media {file_id} saved by {username}")
+                return file_id
+        except SQLAlchemyError as e:
+            logger.error(f"Error saving media: {str(e)}")
+            raise
+
+    def save_blog(self, username: str, title: str, content: str, tags: str = "", media: Optional[List[str]] = None, font: str = 'Inter', is_published: bool = True, is_draft: bool = False) -> str:
+        """
+        Save a new blog post.
+        Args:
+            username: Author's username.
+            title: Blog title.
+            content: Blog content.
+            tags: Comma-separated tags.
+            media: List of media IDs.
+            font: Font style.
+            is_published: Publish status.
+            is_draft: Draft status.
+        Returns:
+            str: Blog ID.
+        """
         title = bleach.clean(title)
         content = bleach.clean(content)
-        tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
+        tag_list = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
         blog_id = str(uuid.uuid4())
         public_link = f"{APP_URL}/content/blog/{urllib.parse.quote(username)}/{blog_id}"
-        with self.session_factory() as session:
-            user = session.query(User).filter_by(username=username).first()
-            if not user:
-                raise ValueError("User not found")
-            blog = Blog(
-                id=blog_id,
-                user_id=user.id,
-                username=username,
-                title=title,
-                content=content,
-                tags=tags,
-                media=media or [],
-                font=font,
-                content_type=content_type,
-                public_link=public_link,
-                is_published=is_published
-            )
-            session.add(blog)
-            session.commit()
-        return blog_id
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    raise ValueError("User not found")
+                blog = Blog(
+                    id=blog_id,
+                    user_id=user.id,
+                    username=username,
+                    title=title,
+                    content=content,
+                    tags=tag_list,
+                    media=media or [],
+                    font=font,
+                    public_link=public_link,
+                    is_published=is_published,
+                    is_draft=is_draft
+                )
+                session.add(blog)
+                for tag_name in tag_list:
+                    tag_id = self.save_tag(tag_name)
+                    tag = session.query(Tag).filter_by(id=tag_id).first()
+                    blog.tag_objects.append(tag)
+                session.commit()
+                if media:
+                    for media_id in media:
+                        media_record = session.query(Media).filter_by(id=media_id).first()
+                        if media_record:
+                            media_record.content_type = 'blog'
+                            media_record.content_id = blog_id
+                    session.commit()
+                logger.info(f"Blog {blog_id} saved by {username}")
+                self.notify_followers(username, 'blog', blog_id, f"New blog: {title}")
+                return blog_id
+        except SQLAlchemyError as e:
+            logger.error(f"Error saving blog: {str(e)}")
+            raise
 
-    def save_case_study(self, username: str, title: str, problem: str, solution: str, results: str, tags: str = "", media: Optional[List[str]] = None, font: str = 'Inter', is_published: bool = True) -> str:
+    def update_blog(self, blog_id: str, title: str, content: str, tags: str, media: List[str], font: str, is_published: bool, is_draft: bool) -> bool:
+        """
+        Update an existing blog post.
+        Args:
+            blog_id: Blog ID.
+            title: Updated title.
+            content: Updated content.
+            tags: Updated tags.
+            media: Updated media IDs.
+            font: Updated font.
+            is_published: Updated publish status.
+            is_draft: Updated draft status.
+        Returns:
+            bool: True if updated successfully, False otherwise.
+        """
+        try:
+            with self.session_factory() as session:
+                blog = session.query(Blog).filter_by(id=blog_id).first()
+                if not blog:
+                    logger.error(f"Blog {blog_id} not found")
+                    return False
+                blog.title = bleach.clean(title)
+                blog.content = bleach.clean(content)
+                tag_list = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
+                blog.tags = tag_list
+                blog.media = media
+                blog.font = font
+                blog.is_published = is_published
+                blog.is_draft = is_draft
+                blog.updated_at = datetime.utcnow()
+                blog.tag_objects.clear()
+                for tag_name in tag_list:
+                    tag_id = self.save_tag(tag_name)
+                    tag = session.query(Tag).filter_by(id=tag_id).first()
+                    blog.tag_objects.append(tag)
+                if media:
+                    for media_id in media:
+                        media_record = session.query(Media).filter_by(id=media_id).first()
+                        if media_record:
+                            media_record.content_type = 'blog'
+                            media_record.content_id = blog_id
+                session.commit()
+                logger.info(f"Blog {blog_id} updated")
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error updating blog {blog_id}: {str(e)}")
+            return False
+
+    def save_case_study(self, username: str, title: str, problem: str, solution: str, results: str, tags: str = "", media: Optional[List[str]] = None, font: str = 'Inter', is_published: bool = True, is_draft: bool = False) -> str:
+        """
+        Save a new case study.
+        Args:
+            username: Author's username.
+            title: Case study title.
+            problem: Problem description.
+            solution: Solution description.
+            results: Results description.
+            tags: Comma-separated tags.
+            media: List of media IDs.
+            font: Font style.
+            is_published: Publish status.
+            is_draft: Draft status.
+        Returns:
+            str: Case study ID.
+        """
         title = bleach.clean(title)
         problem = bleach.clean(problem)
         solution = bleach.clean(solution)
         results = bleach.clean(results)
-        tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
+        tag_list = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
         case_id = str(uuid.uuid4())
         public_link = f"{APP_URL}/content/case_study/{urllib.parse.quote(username)}/{case_id}"
-        with self.session_factory() as session:
-            user = session.query(User).filter_by(username=username).first()
-            if not user:
-                raise ValueError("User not found")
-            case_study = CaseStudy(
-                id=case_id,
-                user_id=user.id,
-                username=username,
-                title=title,
-                problem=problem,
-                solution=solution,
-                results=results,
-                tags=tags,
-                media=media or [],
-                font=font,
-                content_type='case_study',
-                public_link=public_link,
-                is_published=is_published
-            )
-            session.add(case_study)
-            session.commit()
-        return case_id
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    raise ValueError("User not found")
+                case_study = CaseStudy(
+                    id=case_id,
+                    user_id=user.id,
+                    username=username,
+                    title=title,
+                    problem=problem,
+                    solution=solution,
+                    results=results,
+                    tags=tag_list,
+                    media=media or [],
+                    font=font,
+                    public_link=public_link,
+                    is_published=is_published,
+                    is_draft=is_draft
+                )
+                session.add(case_study)
+                for tag_name in tag_list:
+                    tag_id = self.save_tag(tag_name)
+                    tag = session.query(Tag).filter_by(id=tag_id).first()
+                    case_study.tag_objects.append(tag)
+                session.commit()
+                if media:
+                    for media_id in media:
+                        media_record = session.query(Media).filter_by(id=media_id).first()
+                        if media_record:
+                            media_record.content_type = 'case_study'
+                            media_record.content_id = case_id
+                    session.commit()
+                logger.info(f"Case study {case_id} saved by {username}")
+                self.notify_followers(username, 'case_study', case_id, f"New case study: {title}")
+                return case_id
+        except SQLAlchemyError as e:
+            logger.error(f"Error saving case study: {str(e)}")
+            raise
 
-    def save_media(self, username: str, file) -> str:
-        file_type = 'image' if file.type.startswith('image') else 'video' if file.type.startswith('video') else 'gif'
-        file_content = base64.b64encode(file.read()).decode('utf-8')
-        file_id = str(uuid.uuid4())
-        with self.session_factory() as session:
-            user = session.query(User).filter_by(username=username).first()
-            if not user:
-                raise ValueError("User not found")
-            media = Media(
-                id=file_id,
-                user_id=user.id,
-                username=username,
-                type=file_type,
-                content=file_content,
-                filename=bleach.clean(file.name)
-            )
-            session.add(media)
-            session.commit()
-        return file_id
+    def update_case_study(self, case_id: str, title: str, problem: str, solution: str, results: str, tags: str, media: List[str], font: str, is_published: bool, is_draft: bool) -> bool:
+        """
+        Update an existing case study.
+        Args:
+            case_id: Case study ID.
+            title: Updated title.
+            problem: Updated problem.
+            solution: Updated solution.
+            results: Updated results.
+            tags: Updated tags.
+            media: Updated media IDs.
+            font: Updated font.
+            is_published: Updated publish status.
+            is_draft: Updated draft status.
+        Returns:
+            bool: True if updated successfully, False otherwise.
+        """
+        try:
+            with self.session_factory() as session:
+                case_study = session.query(CaseStudy).filter_by(id=case_id).first()
+                if not case_study:
+                    logger.error(f"Case study {case_id} not found")
+                    return False
+                case_study.title = bleach.clean(title)
+                case_study.problem = bleach.clean(problem)
+                case_study.solution = bleach.clean(solution)
+                case_study.results = bleach.clean(results)
+                tag_list = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
+                case_study.tags = tag_list
+                case_study.media = media
+                case_study.font = font
+                case_study.is_published = is_published
+                case_study.is_draft = is_draft
+                case_study.updated_at = datetime.utcnow()
+                case_study.tag_objects.clear()
+                for tag_name in tag_list:
+                    tag_id = self.save_tag(tag_name)
+                    tag = session.query(Tag).filter_by(id=tag_id).first()
+                    case_study.tag_objects.append(tag)
+                if media:
+                    for media_id in media:
+                        media_record = session.query(Media).filter_by(id=media_id).first()
+                        if media_record:
+                            media_record.content_type = 'case_study'
+                            media_record.content_id = case_id
+                session.commit()
+                logger.info(f"Case study {case_id} updated")
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error updating case study {case_id}: {str(e)}")
+            return False
 
-    def save_comment(self, content_type: str, content_id: str, username: str, comment: str) -> str:
+    def save_comment(self, username: str, content_type: str, content_id: str, comment: str) -> str:
+        """
+        Save a new comment.
+        Args:
+            username: Commenter's username.
+            content_type: Content type (blog/case_study).
+            content_id: Content ID.
+            comment: Comment text.
+        Returns:
+            str: Comment ID.
+        """
         comment = bleach.clean(comment)
         comment_id = str(uuid.uuid4())
-        with self.session_factory() as session:
-            user = session.query(User).filter_by(username=username).first()
-            if not user:
-                raise ValueError("User not found")
-            comment_obj = Comment(
-                id=comment_id,
-                user_id=user.id,
-                content_type=content_type,
-                content_id=content_id,
-                username=username,
-                comment=comment
-            )
-            session.add(comment_obj)
-            session.commit()
-        return comment_id
-
-    def update_profile(self, username: str, profile_data: Dict) -> bool:
-        with self.session_factory() as session:
-            user = session.query(User).filter_by(username=username).first()
-            if not user:
-                return False
-            user.profile = {**user.profile, **profile_data}
-            session.commit()
-        return True
-
-    def increment_views(self, content_type: str, content_id: str):
-        with self.session_factory() as session:
-            if content_type == 'blog':
-                content = session.query(Blog).filter_by(id=content_id).first()
-            else:
-                content = session.query(CaseStudy).filter_by(id=content_id).first()
-            if content:
-                content.views += 1
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    raise ValueError("User not found")
+                comment_obj = Comment(
+                    id=comment_id,
+                    user_id=user.id,
+                    username=username,
+                    content_type=content_type,
+                    content_id=content_id,
+                    comment=comment
+                )
+                session.add(comment_obj)
                 session.commit()
+                logger.info(f"Comment {comment_id} saved by {username}")
+                content = self.get_content_by_id(content_type, content_id)
+                if content:
+                    self.notify_user(content.username, f"New comment on {content.title}", content_type, content_id)
+                return comment_id
+        except SQLAlchemyError as e:
+            logger.error(f"Error saving comment: {str(e)}")
+            raise
 
-    def get_analytics(self, username: str) -> Dict:
-        with self.session_factory() as session:
-            blogs = session.query(Blog).filter_by(username=username).all()
-            case_studies = session.query(CaseStudy).filter_by(username=username).all()
-            total_views = sum(blog.views for blog in blogs) + sum(case.views for case in case_studies)
-            total_comments = session.query(Comment).filter(
-                Comment.content_id.in_([b.id for b in blogs] + [c.id for c in case_studies])
-            ).count()
-            return {
-                'total_blogs': len(blogs),
-                'total_case_studies': len(case_studies),
-                'total_views': total_views,
-                'total_comments': total_comments,
-                'recent_blogs': sorted(blogs, key=lambda x: x.created_at, reverse=True)[:5],
-                'recent_case_studies': sorted(case_studies, key=lambda x: x.created_at, reverse=True)[:5]
-            }
+    def save_like(self, username: str, content_type: str, content_id: str) -> bool:
+        """
+        Save a like for content.
+        Args:
+            username: User's username.
+            content_type: Content type (blog/case_study).
+            content_id: Content ID.
+        Returns:
+            bool: True if saved successfully, False otherwise.
+        """
+        like_id = str(uuid.uuid4())
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    logger.error(f"User {username} not found")
+                    return False
+                existing_like = session.query(Like).filter_by(
+                    user_id=user.id, content_type=content_type, content_id=content_id
+                ).first()
+                if existing_like:
+                    logger.info(f"User {username} already liked {content_type}:{content_id}")
+                    return False
+                like = Like(
+                    id=like_id,
+                    user_id=user.id,
+                    content_type=content_type,
+                    content_id=content_id
+                )
+                session.add(like)
+                session.commit()
+                logger.info(f"Like {like_id} saved by {username}")
+                content = self.get_content_by_id(content_type, content_id)
+                if content:
+                    self.notify_user(content.username, f"New like on {content.title}", content_type, content_id)
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error saving like: {str(e)}")
+            return False
 
-    @st.cache_data(ttl=3600)
-    def get_user_blogs(_self, username: str):
-        start_time = time.time()
-        with _self.session_factory() as session:
-            blogs = session.query(Blog).filter_by(username=username).limit(30).all()
-        st.write(f"get_user_blogs took {time.time() - start_time:.2f} seconds")
-        return blogs
+    def remove_like(self, username: str, content_type: str, content_id: str) -> bool:
+        """
+        Remove a like from content.
+        Args:
+            username: User's username.
+            content_type: Content type (blog/case_study).
+            content_id: Content ID.
+        Returns:
+            bool: True if removed successfully, False otherwise.
+        """
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    logger.error(f"User {username} not found")
+                    return False
+                like = session.query(Like).filter_by(
+                    user_id=user.id, content_type=content_type, content_id=content_id
+                ).first()
+                if not like:
+                    logger.info(f"No like found for {username} on {content_type}:{content_id}")
+                    return False
+                session.delete(like)
+                session.commit()
+                logger.info(f"Like removed by {username} for {content_type}:{content_id}")
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error removing like: {str(e)}")
+            return False
 
-    @st.cache_data(ttl=3600)
-    def get_user_case_studies(_self, username: str):
-        start_time = time.time()
-        with _self.session_factory() as session:
-            cases = session.query(CaseStudy).filter_by(username=username).limit(30).all()
-        st.write(f"get_user_case_studies took {time.time() - start_time:.2f} seconds")
-        return cases
+    def save_draft(self, username: str, content_type: str, content_id: Optional[str], data: Dict[str, Any]) -> str:
+        """
+        Save a draft version of content.
+        Args:
+            username: User's username.
+            content_type: Content type (blog/case_study).
+            content_id: Associated content ID.
+            data: Draft data.
+        Returns:
+            str: Draft ID.
+        """
+        draft_id = str(uuid.uuid4())
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    raise ValueError("User not found")
+                draft = Draft(
+                    id=draft_id,
+                    user_id=user.id,
+                    content_type=content_type,
+                    content_id=content_id,
+                    data=data
+                )
+                session.add(draft)
+                session.commit()
+                logger.info(f"Draft {draft_id} saved by {username}")
+                return draft_id
+        except SQLAlchemyError as e:
+            logger.error(f"Error saving draft: {str(e)}")
+            raise
 
-    @st.cache_data(ttl=3600)
-    def get_media(_self, username: str, file_id: str):
-        start_time = time.time()
-        with _self.session_factory() as session:
-            media = session.query(Media).filter_by(username=username, id=file_id).first()
-        st.write(f"get_media took {time.time() - start_time:.2f} seconds")
-        return media
+    def get_drafts(self, username: str, content_type: str) -> List[Draft]:
+        """
+        Retrieve drafts for a user.
+        Args:
+            username: User's username.
+            content_type: Content type (blog/case_study).
+        Returns:
+            List[Draft]: List of drafts.
+        """
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    return []
+                return session.query(Draft).filter_by(
+                    user_id=user.id, content_type=content_type
+                ).order_by(Draft.created_at.desc()).all()
+        except SQLAlchemyError as e:
+            logger.error(f"Error retrieving drafts for {username}: {str(e)}")
+            return []
 
-    @st.cache_data(ttl=3600)
-    def get_user_profile(_self, username: str):
-        start_time = time.time()
-        with _self.session_factory() as session:
-            user = session.query(User).filter_by(username=username).first()
-        st.write(f"get_user_profile took {time.time() - start_time:.2f} seconds")
-        return user.profile if user else {}
+    def notify_user(self, username: str, message: str, content_type: Optional[str] = None, content_id: Optional[str] = None) -> bool:
+        """
+        Send a notification to a user.
+        Args:
+            username: Recipient's username.
+            message: Notification message.
+            content_type: Associated content type.
+            content_id: Associated content ID.
+        Returns:
+            bool: True if sent successfully, False otherwise.
+        """
+        notification_id = str(uuid.uuid4())
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    logger.error(f"User {username} not found")
+                    return False
+                notification = Notification(
+                    id=notification_id,
+                    user_id=user.id,
+                    message=bleach.clean(message),
+                    content_type=content_type,
+                    content_id=content_id
+                )
+                session.add(notification)
+                session.commit()
+                logger.info(f"Notification {notification_id} sent to {username}")
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error sending notification to {username}: {str(e)}")
+            return False
 
-# Utility Functions
+    def notify_followers(self, username: str, content_type: str, content_id: str, message: str) -> None:
+        """
+        Notify followers of new content.
+        Args:
+            username: Content creator's username.
+            content_type: Content type.
+            content_id: Content ID.
+            message: Notification message.
+        """
+        try:
+            with self.session_factory() as session:
+                followers = session.query(User).filter(
+                    User.profile.contains({'following': [username]})
+                ).all()
+                for follower in followers:
+                    self.notify_user(follower.username, message, content_type, content_id)
+        except SQLAlchemyError as e:
+            logger.error(f"Error notifying followers for {username}: {str(e)}")
+
+    def get_notifications(self, username: str, unread_only: bool = False) -> List[Notification]:
+        """
+        Retrieve user notifications.
+        Args:
+            username: User's username.
+            unread_only: Filter for unread notifications.
+        Returns:
+            List[Notification]: List of notifications.
+        """
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    return []
+                query = session.query(Notification).filter_by(user_id=user.id)
+                if unread_only:
+                    query = query.filter_by(is_read=False)
+                return query.order_by(Notification.created_at.desc()).all()
+        except SQLAlchemyError as e:
+            logger.error(f"Error retrieving notifications for {username}: {str(e)}")
+            return []
+
+    def mark_notification_read(self, notification_id: str) -> bool:
+        """
+        Mark a notification as read.
+        Args:
+            notification_id: Notification ID.
+        Returns:
+            bool: True if marked successfully, False otherwise.
+        """
+        try:
+            with self.session_factory() as session:
+                notification = session.query(Notification).filter_by(id=notification_id).first()
+                if not notification:
+                    logger.error(f"Notification {notification_id} not found")
+                    return False
+                notification.is_read = True
+                session.commit()
+                logger.info(f"Notification {notification_id} marked as read")
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error marking notification {notification_id} as read: {str(e)}")
+            return False
+
+    def log_analytics_event(self, username: Optional[str], event_type: str, content_type: Optional[str] = None, content_id: Optional[str] = None, metadata: Dict[str, Any] = None) -> bool:
+        """
+        Log an analytics event.
+        Args:
+            username: User's username, if authenticated.
+            event_type: Type of event (e.g., view, click).
+            content_type: Associated content type.
+            content_id: Associated content ID.
+            metadata: Additional event data.
+        Returns:
+            bool: True if logged successfully, False otherwise.
+        """
+        event_id = str(uuid.uuid4())
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first() if username else None
+                event = AnalyticsEvent(
+                    id=event_id,
+                    user_id=user.id if user else None,
+                    event_type=event_type,
+                    content_type=content_type,
+                    content_id=content_id,
+                    metadata=metadata or {}
+                )
+                session.add(event)
+                session.commit()
+                logger.info(f"Analytics event {event_id} logged")
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error logging analytics event: {str(e)}")
+            return False
+
+    def get_content_by_id(self, content_type: str, content_id: str) -> Optional[Any]:
+        """
+        Retrieve content by type and ID.
+        Args:
+            content_type: Content type (blog/case_study).
+            content_id: Content ID.
+        Returns:
+            Optional[Any]: Content object or None.
+        """
+        try:
+            with self.session_factory() as session:
+                if content_type == 'blog':
+                    return session.query(Blog).filter_by(id=content_id).first()
+                elif content_type == 'case_study':
+                    return session.query(CaseStudy).filter_by(id=content_id).first()
+                logger.error(f"Invalid content type: {content_type}")
+                return None
+        except SQLAlchemyError as e:
+            logger.error(f"Error retrieving content {content_type}:{content_id}: {str(e)}")
+            return None
+
+    def get_user_content(self, username: str, content_type: Optional[str] = None) -> List[Any]:
+        """
+        Retrieve all content by user and type.
+        Args:
+            username: User's username.
+            content_type: Content type (blog/case_study, or None for all).
+        Returns:
+            List[Any]: List of content objects.
+        """
+        try:
+            with self.session_factory() as session:
+                if content_type == 'blog':
+                    return session.query(Blog).filter_by(username=username).all()
+                elif content_type == 'case_study':
+                    return session.query(CaseStudy).filter_by(username=username).all()
+                elif content_type or content_type == 'all':
+                    blogs = session.query(Blog).filter_by(username=username).all()
+                    case_studies = session.query(CaseStudy).filter_by(username=username).all()
+                    return blogs + case_studies
+                return []
+        except SQLAlchemyError as e:
+            logger.error(f"Error retrieving content for {username}: {str(e)}")
+            return []
+
+    def search_content(self, query: str, tags: Optional[List[str]] = None, content_type: Optional[str] = None) -> List[Any]:
+        """
+        Search content by query and tags.
+        Args:
+            query: Search query.
+            tags: List of tags to filter by.
+            content_type: Content type (blog/case_study, or None for all).
+        Returns:
+            List[Any]: List of matching content objects.
+        """
+        try:
+            with self.session_factory() as session:
+                blogs = session.query(Blog).filter(
+                    and_(
+                        Blog.is_published == True,
+                        or_(
+                            Blog.title.ilike(f"%{query}%"),
+                            Blog.content.ilike(f"%{query}%")
+                        )
+                    )
+                )
+                case_studies = session.query(CaseStudy).filter(
+                    and_(
+                        CaseStudy.is_published == True,
+                        or_(
+                            CaseStudy.title.ilike(f"%{query}%"),
+                            CaseStudy.problem.ilike(f"%{query}%"),
+                            CaseStudy.solution.ilike(f"%{query}%"),
+                            CaseStudy.results.ilike(f"%{query}%")
+                        )
+                    )
+                )
+                if tags:
+                    blogs = blogs.filter(Blog.tags.contains(tags))
+                    case_studies = case_studies.filter(CaseStudy.tags.contains(tags))
+                if content_type == 'blog':
+                    return blogs.all()
+                elif content_type == 'case_study':
+                    return case_studies.all()
+                return blogs.all() + case_studies.all()
+        except SQLAlchemyError as e:
+            logger.error(f"Error searching content: {str(e)}")
+            return []
+
+    def get_analytics(self, username: str, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> Dict[str, Any]:
+        """
+        Retrieve analytics for user content.
+        Args:
+            username: User's username.
+            start_date: Start date filter.
+            end_date: End date filter.
+        Returns:
+            Dict[str, Any]: Analytics data.
+        """
+        try:
+            with self.session_factory() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if not user:
+                    return {}
+                blog_views = session.query(func.sum(Blog.views)).filter_by(username=username).scalar() or 0
+                case_study_views = session.query(func.sum(CaseStudy.views)).filter_by(username=username).scalar() or 0
+                blog_likes = session.query(func.count(Like.id)).filter(
+                    Like.content_type == 'blog',
+                    Like.content_id.in_(session.query(Blog.id).filter_by(username=username))
+                ).scalar() or 0
+                case_study_likes = session.query(func.count(Like.id)).filter(
+                    Like.content_type == 'case_study',
+                    Like.content_id.in_(session.query(CaseStudy.id).filter_by(username=username))
+                ).scalar() or 0
+                events_query = session.query(AnalyticsEvent).filter_by(user_id=user.id)
+                if start_date:
+                    events_query = events_query.filter(AnalyticsEvent.timestamp >= start_date)
+                if end_date:
+                    events_query = events_query.filter(AnalyticsEvent.timestamp <= end_date)
+                event_counts = events_query.group_by(AnalyticsEvent.event_type).count()
+                return {
+                    'total_views': blog_views + case_study_views,
+                    'total_likes': blog_likes + case_study_likes,
+                    'blog_count': session.query(Blog).filter_by(username=username).count(),
+                    'case_study_count': session.query(CaseStudy).filter_by(username=username).count(),
+                    'event_counts': event_counts
+                }
+        except SQLAlchemyError as e:
+            logger.error(f"Error retrieving analytics for {username}: {str(e)}")
+            return {}
+
+    def delete_content(self, content_type: str, content_id: str) -> bool:
+        """
+        Delete content by type and ID.
+        Args:
+            content_type: Content type (blog/case_study).
+            content_id: Content ID.
+        Returns:
+            bool: True if deleted successfully, False otherwise.
+        """
+        try:
+            with self.session_factory() as session:
+                if content_type == 'blog':
+                    content = session.query(Blog).filter_by(id=content_id).first()
+                elif content_type == 'case_study':
+                    content = session.query(CaseStudy).filter_by(id=content_id).first()
+                else:
+                    logger.error(f"Invalid content type: {content_type}")
+                    return False
+                if not content:
+                    logger.error(f"Content {content_type}:{content_id} not found")
+                    return False
+                session.query(Comment).filter_by(content_type=content_type, content_id=content_id).delete()
+                session.query(Like).filter_by(content_type=content_type, content_id=content_id).delete()
+                session.query(Media).filter_by(content_type=content_type, content_id=content_id).delete()
+                session.query(Draft).filter_by(content_type=content_type, content_id=content_id).delete()
+                session.query(Notification).filter_by(content_type=content_type, content_id=content_id).delete()
+                session.delete(content)
+                session.commit()
+                logger.info(f"Deleted {content_type}:{content_id}")
+                return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error deleting {content_type}:{content_id}: {str(e)}")
+            return False
 
 
-def export_to_pdf(content_type: str, content, media: Optional[List] = None):
-    letter, SimpleDocTemplate, Paragraph, Spacer, Image, getSampleStyleSheet, BytesIO = import_pdf_libraries()
-    from reportlab.lib.units import inch
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
-    styles = getSampleStyleSheet()
-    story = []
+def get_data_manager():
+    """
+    Instantiate DataManager with session factory.
+    Returns:
+        DataManager: Data manager instance.
+    """
+    return DataManager(Session)
 
-    story.append(Paragraph(bleach.clean(content.title), styles['Title']))
-    story.append(Spacer(1, 12))
-
-    if content_type == 'blog':
-        story.append(Paragraph(bleach.clean(content.content), styles['BodyText']))
-    else:
-        story.append(Paragraph(f"<b>Problem:</b> {bleach.clean(content.problem)}", styles['BodyText']))
-        story.append(Spacer(1, 12))
-        story.append(Paragraph(f"<b>Solution:</b> {bleach.clean(content.solution)}", styles['BodyText']))
-        story.append(Spacer(1, 12))
-        story.append(Paragraph(f"<b>Results:</b> {bleach.clean(content.results)}", styles['BodyText']))
-
-    if media:
-        for media_item in media:
-            if media_item.type == 'image':
-                img_data = base64.b64decode(media_item.content)
-                img_buffer = BytesIO(img_data)
-                story.append(Image(img_buffer, width=2 * inch, height=2 * inch))
-                story.append(Spacer(1, 12))
-
-    doc.build(story)
-    return buffer.getvalue()
+# Streamlit UI Components
 
 
-def validate_email(email: str) -> bool:
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return bool(re.match(pattern, email))
-
-
-def generate_gravatar_url(email: str) -> str:
-    email_hash = hashlib.md5(email.lower().encode('utf-8')).hexdigest()
-    return f"https://www.gravatar.com/avatar/{email_hash}?s=200&d=identicon"
-
-# CSS Styling
-
-
-def load_css():
+def custom_css():
+    """
+    Apply custom CSS for UI styling.
+    """
     st.markdown("""
-    <style>
-        .header {
-            text-align: center;
-            padding: 2rem 0;
-            background: linear-gradient(90deg, #1e3c72, #2a5298);
-            color: white;
-            border-radius: 10px;
-            margin-bottom: 2rem;
-        }
-        .container {
-            max-width: 1000px;
-            margin: 0 auto;
-            padding: 1rem;
-        }
-        .card {
-            background: white;
-            padding: 2rem;
-            border-radius: 10px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-            margin-bottom: 1rem;
-        }
-        .sidebar-title {
-            font-size: 1.5rem;
-            font-weight: bold;
-            color: #1e3c72;
-            margin-bottom: 1rem;
-        }
-        .content-card {
-            background: #f9fafb;
-            padding: 1.5rem;
-            border-radius: 8px;
-            margin-bottom: 1rem;
-            border-left: 4px solid #2a5298;
-        }
-        .comment-card {
-            background: #f1f5f9;
-            padding: 1rem;
-            border-radius: 8px;
-            margin-bottom: 0.5rem;
-        }
-        .template-card {
-            background: #e0f2fe;
-            padding: 1rem;
-            border-radius: 8px;
-            margin-bottom: 1rem;
-        }
-        .analytics-box {
-            background: #e0f2fe;
-            padding: 1rem;
-            border-radius: 8px;
-            margin-bottom: 1rem;
-        }
-        .text-lg {
-            font-size: 1.125rem;
-        }
-        .text-center {
-            text-align: center;
-        }
-        .text-gray-400 {
-            color: #9ca3af;
-        }
-        .py-4 {
-            padding-top: 1rem;
-            padding-bottom: 1rem;
-        }
-        .max-w-md {
-            max-width: 28rem;
-        }
-        .mx-auto {
-            margin-left: auto;
-            margin-right: auto;
-        }
-        .mb-6 {
-            margin-bottom: 1.5rem;
-        }
-        .font-semibold {
-            font-weight: 600;
-        }
-        .avatar {
-            border-radius: 50%;
-            width: 120px;
-            height: 120px;
-        }
-    </style>
+        <style>
+            .stApp { background-color: #f5f5f5; }
+            .sidebar .sidebar-content { background-color: #2c3e50; color: white; }
+            .stButton>button { background-color: #3498db; color: white; border-radius: 5px; }
+            .stTextInput>div>input { border-radius: 5px; }
+            .stTextArea>div>textarea { border-radius: 5px; }
+            .content-card { background-color: white; padding: 20px; margin: 10px 0; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+            .comment { background-color: #ecf0f1; padding: 10px; margin: 5px 0; border-radius: 5px; }
+            .notification { background-color: #d4edda; padding: 10px; margin: 5px 0; border-radius: 5px; }
+            .tag { background-color: #e0e0e0; padding: 5px 10px; margin: 2px; border-radius: 15px; display: inline-block; }
+        </style>
     """, unsafe_allow_html=True)
-
-# Pages
 
 
 def login_page():
-    st.markdown("""
-    <div class="header">
-        <h1>🌌 GalaxyWrite</h1>
-        <p>Your Cosmic Blogging Platform</p>
-    </div>
-    <div class="container">
-        <div class="card max-w-md mx-auto">
-            <h2 class="text-2xl font-semibold mb-6 text-center">Welcome Back</h2>
-    """, unsafe_allow_html=True)
-
+    """
+    Render login page.
+    """
+    st.title("Login to GalaxyWrite")
     credentials = {
-        'usernames': {
-            user.username: {
-                'name': user.username,
-                'password': user.password,
-                'email': user.email
+        "credentials": {
+            "usernames": {
+                user.username: {
+                    "name": user.username,
+                    "password": user.password,
+                    "email": user.email
+                }
+                for user in Session().query(User).all()
             }
-            for user in Session().query(User).all()
         }
     }
     authenticator = stauth.Authenticate(
         credentials,
-        cookie_name="galaxywrite",
-        key="abcdef",
+        "blog_platform",
+        "auth",
         cookie_expiry_days=30
     )
-
-    name, authentication_status, username = authenticator.login('Login', 'main')
-
+    name, authentication_status, username = authenticator.login("Login", "main")
     if authentication_status:
-        st.session_state.authenticated = True
-        st.session_state.username = username
-        with Session() as session:
-            user = session.query(User).filter_by(username=username).first()
-            if user:
-                st.session_state.user_password = user.password
-        st.success("Login successful!")
-        st.rerun()
-    elif authentication_status == False:
-        st.error("Invalid username or password!")
-    elif authentication_status == None:
+        try:
+            with Session() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if user:
+                    user.last_login = datetime.utcnow()
+                    session.commit()
+                    dm = get_data_manager()
+                    dm.log_analytics_event(username, 'login')
+            st.session_state.authenticated = True
+            st.session_state.username = username
+            st.session_state.is_admin = user.is_admin
+            st.rerun()
+        except SQLAlchemyError as e:
+            logger.error(f"Error during login for {username}: {str(e)}")
+            st.error("An error occurred during login")
+    elif authentication_status is False:
+        st.error("Invalid username or password")
+        st.error("Username or password is incorrect")
+    elif authentication_status is None:
         st.warning("Please enter your username and password")
 
-    with st.expander("Create a New Account", expanded=False):
-        st.markdown("<h3 class='text-lg font-semibold'>Sign Up</h3>", unsafe_allow_html=True)
-        new_username = st.text_input("Username", key="signup_username", placeholder="Choose a unique username")
-        new_email = st.text_input("Email", key="signup_email", placeholder="your.email@example.com")
-        new_password = st.text_input("Password", type="password", key="signup_password",
-                                     placeholder="At least 8 characters")
-        confirm_password = st.text_input("Confirm Password", type="password", key="confirm_password")
 
-        if st.button("Sign Up", key="signup_btn", type="primary"):
-            if not new_username or not new_email or not new_password:
-                st.error("Please fill all fields!")
-            elif new_password != confirm_password:
-                st.error("Passwords don't match!")
-            elif len(new_password) < 8:
-                st.error("Password must be at least 8 characters!")
-            elif not validate_email(new_email):
-                st.error("Invalid email format!")
-            elif dm.register_user(new_username, new_password, new_email):
-                st.success("Account created successfully! Please login.")
-                credentials['usernames'][new_username] = {
-                    'name': new_username,
-                    'password': dm.hash_password(new_password),
-                    'email': new_email
-                }
+def signup_page():
+    """
+    Render signup page.
+    """
+    st.title("Sign Up for GalaxyWrite")
+    st.subheader("Create Your Account")
+    username = st.text_input("Username", help="Choose a unique username")
+    password = st.text_input("Password", type="password", help="At least 6 characters")
+    confirm_password = st.text_input("Confirm Password", type="password")
+    email = st.text_input("Email", help="Enter a valid email address")
+    if st.button("Sign Up"):
+        if password != confirm_password:
+            st.error("Passwords do not match")
+            logger.error("Password mismatch during signup")
+            return
+        if len(password) < 6:
+            st.error("Password must be at least 6 characters long")
+            logger.error("Password too short during signup")
+            return
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            st.error("Invalid email format")
+            logger.error("Invalid email during signup")
+            return
+        dm = get_data_manager()
+        try:
+            if dm.save_user(username, password, email):
+                st.success("User registered successfully! Please log in.")
+                logger.info(f"User {username} signed up successfully")
+                dm.log_analytics_event(username, 'signup')
             else:
-                st.error("Username or email already exists!")
+                st.error("Username or email already exists")
+                logger.error(f"Signup failed for {username}: duplicate username/email")
+        except Exception as e:
+            st.error("An error occurred during signup")
+            logger.error(f"Signup error: {str(e)}")
 
-    st.markdown("</div></div>", unsafe_allow_html=True)
 
+def profile_page():
+    """
+    Render user profile page.
+    """
+    st.title("Edit Your Profile")
+    username = st.session_state.username
+    dm = get_data_manager()
+    try:
 
-def dashboard():
-    st.markdown("""
-    <div class="header">
-        <h1>📊 Dashboard</h1>
-        <p>Your personalized content hub</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    st.subheader("Quick Actions")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("Write New Blog", key="quick_blog"):
-            st.query_params.page = "Write Blog"
-            st.rerun()
-    with col2:
-        if st.button("Create Case Study", key="quick_case"):
-            st.query_params.page = "Create Case Study"
-            st.rerun()
-    with col3:
-        if st.button("View Analytics", key="quick_analytics"):
-            st.query_params.page = "Analytics"
-            st.rerun()
-
-    st.subheader("Recent Content")
-    blogs = dm.get_user_blogs(st.session_state.username)[:5]
-    case_studies = dm.get_user_case_studies(st.session_state.username)[:5]
-    recent_content = sorted(
-        [{'type': 'blog', 'content': b} for b in blogs] + [{'type': 'case_study', 'content': c} for c in case_studies],
-        key=lambda x: x['content'].created_at,
-        reverse=True
-    )[:5]
-    for item in recent_content:
-        content = item['content']
-        st.markdown('<div class="content-card">', unsafe_allow_html=True)
-        st.markdown(f"""
-        <h4>{bleach.clean(content.title)}</h4>
-        <p><b>{item['type'].title()}</b> | Created: {content.created_at.strftime('%B %d, %Y')} | Views: {content.views}</p>
-        """, unsafe_allow_html=True)
-        st.link_button("View", content.public_link)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    st.subheader("Notifications")
-    profile = dm.get_user_profile(st.session_state.username)
-    if profile.get('notifications', {}).get('email_comments'):
-        comments = []
         with Session() as session:
-            user_content_ids = [b.id for b in blogs] + [c.id for c in case_studies]
-            comments = session.query(Comment).filter(Comment.content_id.in_(user_content_ids)
-                                                     ).order_by(Comment.created_at.desc()).limit(5).all()
-        for comment in comments:
-            st.markdown(
-                f"<p><b>{bleach.clean(comment.username)}</b> commented on your content: {bleach.clean(comment.comment[:50])}...</p>", unsafe_allow_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def main_page():
-    st.markdown("""
-    <div class="header">
-        <h1>🌌 Explore GalaxyWrite</h1>
-        <p>Discover stories, case studies, and ideas from our cosmic community</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    all_content = get_all_public_content()
-    for content in all_content:
-        with st.container():
-            st.markdown('<div class="content-card">', unsafe_allow_html=True)
-            if content['type'] == 'blog':
-                st.markdown(f"""
-                <h3>{bleach.clean(content['content'].title)}</h3>
-                <p><strong>By {bleach.clean(content['author'])}</strong> | {content['content'].created_at.strftime('%B %d, %Y')} | 👀 {content['content'].views} views</p>
-                <p>{bleach.clean(content['content'].content[:200])}...</p>
-                """, unsafe_allow_html=True)
-                st.link_button("Read More", content['content'].public_link)
-                if content['content'].media:
-                    media = dm.get_media(content['author'], content['content'].media[0])
-                    if media and media.type == 'image':
-                        st.image(base64.b64decode(media.content), width=300)
-            else:
-                st.markdown(f"""
-                <h3>{bleach.clean(content['content'].title)}</h3>
-                <p><strong>By {bleach.clean(content['author'])}</strong> | {content['content'].created_at.strftime('%B %d, %Y')} | 👀 {content['content'].views} views</p>
-                <p><strong>Problem:</strong> {bleach.clean(content['content'].problem[:100])}...</p>
-                """, unsafe_allow_html=True)
-                st.link_button("Read More", content['content'].public_link)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def blog_editor():
-    st.markdown("""
-    <div class="header">
-        <h1>✍️ Write a Blog</h1>
-        <p>Share your thoughts with the universe</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    template = st.selectbox("Choose a Template", ["None", "Tech Blog",
-                            "Personal Story", "Tutorial"], key="blog_template")
-    title = st.text_input("Blog Title", placeholder="Enter your blog title", key="blog_title")
-    content = st.text_area("Blog Content", placeholder="Write your blog content here...",
-                           height=300, key="blog_content")
-    tags = st.text_input("Tags (comma-separated)", placeholder="e.g., tech, ai, coding", key="blog_tags")
-    font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"], index=0, key="blog_font")
-    is_published = st.checkbox("Publish immediately", value=True, key="blog_publish")
-    uploaded_files = st.file_uploader("Upload Media (Images/Videos)", accept_multiple_files=True,
-                                      type=['png', 'jpg', 'jpeg', 'gif', 'mp4'], key="blog_media")
-
-    if template != "None":
-        if template == "Tech Blog":
-            content = "## Introduction\n\n## Technical Details\n\n## Conclusion"
-        elif template == "Personal Story":
-            content = "## The Beginning\n\n## The Journey\n\n## Reflections"
-        elif template == "Tutorial":
-            content = "## Prerequisites\n\n## Step-by-Step Guide\n\n## Summary"
-        st.session_state['blog_content'] = content
-
-    media_ids = []
-    if uploaded_files:
-        for file in uploaded_files:
-            media_id = dm.save_media(st.session_state.username, file)
-            media_ids.append(media_id)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Save Draft" if not is_published else "Publish Blog", type="primary", key="blog_save"):
-            if not title or not content:
-                st.error("Title and content are required!")
-            else:
-                blog_id = dm.save_blog(st.session_state.username, title, content, tags,
-                                       media_ids, font, is_published=is_published)
-                st.success(
-                    f"Blog {'published' if is_published else 'saved as draft'}! View it [here]({APP_URL}/content/blog/{urllib.parse.quote(st.session_state.username)}/{blog_id})")
-                st.balloons()
-    with col2:
-        if st.button("Preview", key="blog_preview"):
-            st.markdown(f"<h3>{bleach.clean(title)}</h3>", unsafe_allow_html=True)
-            st.markdown(bleach.clean(content), unsafe_allow_html=True)
-            if media_ids:
-                for media_id in media_ids[:1]:
-                    media = dm.get_media(st.session_state.username, media_id)
-                    if media and media.type == 'image':
-                        st.image(base64.b64decode(media.content), width=300)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def case_study_editor():
-    st.markdown("""
-    <div class="header">
-        <h1>📚 Create a Case Study</h1>
-        <p>Document your successes and lessons learned</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    template = st.selectbox("Choose a Template", ["None", "Business Case", "Project Analysis"], key="case_template")
-    title = st.text_input("Case Study Title", placeholder="Enter your case study title", key="case_title")
-    problem = st.text_area("Problem Statement", placeholder="Describe the problem...", height=150, key="case_problem")
-    solution = st.text_area("Solution", placeholder="Describe the solution...", height=150, key="case_solution")
-    results = st.text_area("Results", placeholder="Describe the results...", height=150, key="case_results")
-    tags = st.text_input("Tags (comma-separated)", placeholder="e.g., business, tech", key="case_tags")
-    font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"], index=0, key="case_font")
-    is_published = st.checkbox("Publish immediately", value=True, key="case_publish")
-    uploaded_files = st.file_uploader("Upload Media (Images/Videos)", accept_multiple_files=True,
-                                      type=['png', 'jpg', 'jpeg', 'gif', 'mp4'], key="case_media")
-
-    if template != "None":
-        if template == "Business Case":
-            problem = "Describe the business challenge..."
-            solution = "Outline the implemented strategy..."
-            results = "Summarize the outcomes..."
-        elif template == "Project Analysis":
-            problem = "Identify the project issue..."
-            solution = "Detail the project approach..."
-            results = "Evaluate the project impact..."
-        st.session_state['case_problem'] = problem
-        st.session_state['case_solution'] = solution
-        st.session_state['case_results'] = results
-
-    media_ids = []
-    if uploaded_files:
-        for file in uploaded_files:
-            media_id = dm.save_media(st.session_state.username, file)
-            media_ids.append(media_id)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Save Draft" if not is_published else "Publish Case Study", type="primary", key="case_save"):
-            if not all([title, problem, solution, results]):
-                st.error("All fields are required!")
-            else:
-                case_id = dm.save_case_study(st.session_state.username, title, problem,
-                                             solution, results, tags, media_ids, font, is_published)
-                st.success(
-                    f"Case Study {'published' if is_published else 'saved as draft'}! View it [here]({APP_URL}/content/case_study/{urllib.parse.quote(st.session_state.username)}/{case_id})")
-                st.balloons()
-    with col2:
-        if st.button("Preview", key="case_preview"):
-            st.markdown(f"<h3>{bleach.clean(title)}</h3>", unsafe_allow_html=True)
-            st.markdown(f"<b>Problem:</b> {bleach.clean(problem)})", unsafe_allow_html=True)
-            st.markdown(f"<b>Solution:</b> {bleach.clean(solution)})", unsafe_allow_html=True)
-            st.markdown(f"<b>Results:</b> {bleach.clean(results)})", unsafe_allow_html=True)
-            if media_ids:
-                for media_id in media_ids[:1]:
-                    media = dm.get_media(st.session_state.username, media_id)
-                    if media and media.type == 'image':
-                        st.image(base64.b64decode(media.content), width=300)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def my_content():
-    st.markdown("""
-    <div class="header">
-        <h1>📚 My Content</h1>
-        <p>Manage your blogs and case studies</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    st.subheader("Your Blogs")
-    blogs = dm.get_user_blogs(st.session_state.username)
-    for blog in blogs:
-        with st.expander(f"{bleach.clean(blog.title)} | {'Published' if blog.is_published else 'Draft'}"):
-            st.markdown(f"""
-            <p><b>Created:</b> {blog.created_at.strftime('%B %d, %Y')}</p>
-            <p><b>Views:</b> {blog.views}</p>
-            <p>{bleach.clean(blog.content[:200])}...</p>
-            """, unsafe_allow_html=True)
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.link_button("View", blog.public_link)
-            with col2:
-                if st.button("Edit", key=f"edit_blog_{blog.id}"):
-                    st.session_state.edit_content = {'type': 'blog', 'id': blog.id}
-                    st.query_params.page = "Edit Content"
-                    st.rerun()
-            with col3:
-                if st.button("Delete", key=f"delete_blog_{blog.id}"):
-                    with Session() as session:
-                        session.delete(blog)
-                        session.commit()
-                    st.success("Blog deleted!")
-                    st.rerun()
-
-    st.subheader("Your Case Studies")
-    case_studies = dm.get_user_case_studies(st.session_state.username)
-    for case in case_studies:
-        with st.expander((f"{bleach.clean(case.title)}") | {'Published' if case.is_published else 'Draft'}):
-            st.markdown(f"""
-            <p><b>Created:</b> {case.created_at.strftime('%B %d, %Y')}</p>
-            <p><b>Views:</b> {case.views}</p>
-            <p><b>Problem:</b> {bleach.clean(case.problem[:200])}...</p>
-            """, unsafe_allow_html=True)
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.link_button("View", case.public_link)
-            with col2:
-                if st.button("Edit", key=f"edit_case_{case.id}"):
-                    st.session_state.edit_content = {'type': 'case_study', 'id': case.id}
-                    st.query_params.page = "Edit Content"
-                    st.rerun()
-            with col3:
-                if st.button("Delete", key=f"delete_case_{case.id}"):
-                    with Session() as session:
-                        session.delete(case)
-                        session.commit()
-                    st.success("Case study deleted!")
-                    st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def content_templates():
-    st.markdown("""
-    <div class="header">
-        <h1>📄 Templates</h1>
-        <p>Explore pre-built templates for your content</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    templates = [
-        {
-            'name': 'Tech Blog',
-            'type': 'blog',
-            'content': "## Introduction\n\n## Technical Details\n\n## Conclusion\n",
-            'description': 'Ideal for tech articles and tutorials'
-        },
-        {
-            'name': 'Personal Story',
-            'type': 'blog',
-            'content': "## The Beginning\n\n## The Journey\n\n## Reflections\n",
-            'description': 'Perfect for narrative-driven posts'
-        },
-        {
-            'name': 'Business Case',
-            'type': 'case_study',
-            'problem': "Describe the business challenge...",
-            'solution': "Outline the implemented strategy...",
-            'results': "Summarize the outcomes...",
-            'description': 'Structured for business analysis'
-        }
-    ]
-
-    for template in templates:
-        st.markdown('<div class="template-card"', unsafe_allow_html=True)
-        st.markdown(f"""
-        <h3>{template['name']}</h3>
-        <p>{template['description']}</p>
-        """, unsafe_allow_html=True)
-        if st.button(f"Use {template['name']} Template", key=f"template_{template['name']}"):
-            if template['type'] == 'blog':
-                st.session_state['blog_content'] = template['content']
-                st.query_params.page = "Write Blog"
-            else:
-                st.session_state['case_problem'] = template['problem']
-                st.session_state['case_solution'] = template['solution']
-                st.session_state['case_results'] = template['results']
-                st.query_params.page = "Create Case Study"
-            st.rerun()
-        st.markdown('</div>', unsafe_template=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def analytics_dashboard():
-    st.markdown("""
-    <div class="header">
-        <h1>📈 Analytics Dashboard</h1>
-        <p>Track your content's performance</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    analytics = dm.get_analytics(st.session_state.username)
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.markdown(
-            f"<div class='analytics-box'><p><strong>Total Blogs:</strong> {analytics['total_blogs']}</p></div>", unsafe_allow_html=True)
-    with col2:
-        st.markdown(
-            f"<div class='analytics-box'><p><strong>Case Studies:</strong> {analytics['total_case_studies']}</p></div>", unsafe_allow_html=True)
-    with col3:
-        st.markdown(
-            f"<div class='analytics-box'><p><strong>Total Views:</strong> {analytics['total_views']}</p></div>", unsafe_allow_html=True)
-    with col4:
-        st.markdown(
-            f"<div class='analytics-box'><p><strong>Comments:</strong> {analytics['total_comments']}</p></div>", unsafe_allow_html=True)
-
-    st.subheader("Recent Content Performance")
-    for blog in analytics['recent_blogs']:
-        st.markdown(
-            f"<p><b>Blog:</b> {bleach.clean(blog.title)} | Views: {blog.views} | Created: {blog.created_at.strftime('%B %d, %Y')}</p>", unsafe_allow_html=True)
-    for case in analytics['recent_case_studies']:
-        st.markdown(
-            f"<p><b>Case Study:</b> {bleach.clean(case.title)} | Views: {case.views} | Created: {case.created_at.strftime('%B %d, %Y')}</p>", unsafe_allow_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def content_search_and_filter():
-    st.markdown("""
-    <div class="header">
-        <h1>🔍 Search & Filter</h1>
-        <p>Find content that inspires you</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    query = st.text_input("Search Keywords", placeholder="Enter keywords...")
-    content_type = st.selectbox("Content Type", ["All", "Blog", "Case Study"], key="filter_type")
-    author = st.text_input("Author", placeholder="Enter username (optional)", key="filter_author")
-    tags = st.text_input("Tags (comma-separated)", placeholder="e.g., tech, ai", key="filter_tags")
-    if st.button("Search"):
-        filters = {}
-        if content_type != "All":
-            filters['content_type'] = content_type.lower()
-        if author:
-            filters['author'] = author
-        if tags:
-            filters['tags'] = [tag.strip() for tag in tags.split(',')]
-        results = search_content(query, filters)
-        st.markdown(f"<p class='text-lg'>Found {len(results)} results</p>", unsafe_allow_html=True)
-        for content in results:
-            st.markdown('<div class="content-card">', unsafe_allow_html=True)
-            if content['type'] == 'blog':
-                st.markdown(f"""
-                <h3>{bleach.clean(content['content'].title)}</h3>
-                <p><strong>By {bleach.clean(content['author'])}</strong> | {content['content'].created_at.strftime('%B %d, %Y')}</p>
-                <p>{bleach.clean(content['content'].content[:100])}...</p>
-                """, unsafe_allow_html=True)
-                st.link_button("Read More", content['content'].public_link)
-            else:
-                st.markdown(f"""
-                <h3>{bleach.clean(content['content'].title)}</h3>
-                <p><strong>By {bleach.clean(content['author'])}</strong> | {content['content'].created_at.strftime('%B %d, %Y')}</p>
-                <p><strong>Problem:</strong> {bleach.clean(content['content'].problem[:100])}...</p>
-                """, unsafe_allow_html=True)
-                st.link_button("Read More", content['content'].public_link)
-            st.markdown('</div>', unsafe_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def profile_settings():
-    st.markdown("""
-    <div class="header">
-        <h1>⚙️ Profile Settings</h1>
-        <p>Customize your profile and preferences</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    profile = dm.get_user_profile(st.session_state.username)
-    with st.form("profile_form"):
-        bio = st.text_area("Bio", value=profile.get('bio', ''), key="bio")
-        avatar = st.text_input("Avatar URL", value=profile.get('avatar', ''), key="avatar")
-        preferred_font = st.selectbox("Preferred Font", ["Inter", "Roboto", "Merriweather", "Lora"], index=[
-                                      "Inter"].index(profile.get('preferred_font', 'Inter')), key="font")
-        theme = st.selectbox("Theme", ["light"], index=["light"].index(profile.get('theme', 'light')), key="theme")
-        social_links = {}
-        for i in range(3):
-            platform = st.text_input(f"Social Platform {i + 1}", key=f"platform_{i}")
-            url = st.text_input(f"Social URL {i + 1}", key=f"url_{i}")
-            if platform and url:
-                social_links[platform] = url
-        if st.form_submit_button("Save Profile"):
-            profile_data = {
-                'bio': bio,
-                'avatar': avatar,
-                'preferred_font': preferred_font,
-                'theme': social_links
-            }
-            if dm.update_profile(st.session_state.username, profile_data):
-                st.success("Profile updated!")
-                st.rerun()
-
-    st.subheader("Account Settings")
-    with st.form("account_form"):
-        current_password = st.text_input("Current Password", type="password", key="current_password")
-        new_password = st.text_input("New Password", type="password", key="new_password")
-        confirm_new = st.text_input("Confirm New Password", type="password", key="confirm_new")
-        if st.form_submit_button("Change Password"):
-            if not all([current_password, new_password, confirm_new]):
-                st.error("All fields are required!")
-            elif new_password != confirm_new:
-                st.error("New passwords don't match!")
-            elif len(new_password) < 8:
-                st.error("New password must be at least 8 characters!")
-            elif not dm.check_password(current_password, st.session_state.user_password):
-                st.error("Incorrect current password!")
-            else:
-                with Session() as session:
-                    user = session.query(User).filter_by(username=st.session_state.username).first()
-                    user.password = dm.hash_password(new_password)
-                    session.commit()
-                st.session_state.user_password = user.password
-                st.success("Password changed successfully!")
-
-    st.subheader("Notification Preferences")
-    notifications = profile.get('notifications', {'email_comments': True, 'email_follows': False})
-    with st.form("notifications_form"):
-        email_comments = st.checkbox("Email notifications for comments",
-                                     value=notifications.get('email_comments', True))
-        email_follows = st.checkbox("Email notifications for follows", value=notifications.get('email_follows', False))
-        if st.form_submit_button("Save Notifications"):
-            profile['notifications'] = {'email_comments': email_comments, 'email_follows': email_follows}
-            dm.update_profile(st.session_state.username, profile)
-            st.success("Notification preferences saved!")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def export_content():
-    st.markdown("""
-    <div class="header">
-        <h1>📤 Export Content</h1>
-        <p>Download your blogs and case studies</p>
-    </div>
-    <div class="container">
-    """, unsafe_allow_html=True)
-
-    content_type = st.selectbox("Content Type", ["Blog", "Case Study"], key="export_type")
-    blogs = dm.get_user_blogs(st.session_state.username) if content_type == "Blog" else dm.get_user_case_studies(
-        st.session_state.username)
-    selected_content = st.multiselect("Select Content to Export", [b.title for b in blogs], key="export_select")
-
-    if st.button("Export Selected", type="primary"):
-        for title in selected_content:
-            content = next(b for b in selected_content if b.title == title)
-            media_items = [dm.get_media(st.session_state.username, mid) for mid in content.media]
-            pdf_data = export_to_pdf(content_type.lower(), content, [m for m in media_items if m])
-            st.download_button(
-                label=f"Download {title} as PDF",
-                data=pdf_data,
-                file_name=f"{bleach.clean(title)}.pdf",
-                mime="application/pdf",
-                key=f"export_{title}"
-            )
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def content_view():
-    query_params = st.query_params
-    content_type = query_params.get('content_type', [''])[0]
-    username = query_params.get('username', [''])[0]
-    content_id = query_params.get('content_id', [''])[0]
-
-    if not all([content_type, username, content_id]):
-        st.error("Invalid content URL!")
+            user = session.query(User).filter_by(username=username).first()
+            if not username:
+                st.error("User not found")
+                logger.error(f"Profile load failed for {user}")
+                return
+            profile = user.profile or {}
+    except SQLAlchemyError as e:
+        logger.error(f"Error loading profile for {user}: {str(e)}")
+        st.error("Error loading profile")
         return
 
+    with st.form("profile_form"):
+
+        bio = st.text_area("Bio", value=profile.get('bio', ''), help="Tell us about yourself")
+        website = st.text_input("Website", value=profile.get('website', ''), help="Your personal website")
+        social_links = st.text_area("Social Links (JSON)", value=json.dumps(profile.get('social_links', {}), indent=2),
+                                    help="Enter links as JSON, e.g., {'twitter': 'https://twitter.com/user'}")
+        profile_picture = st.file_uploader("Upload Profile Picture")
+        if st.form_submit_button("Save Profile"):
+            try:
+                new_profile = {
+                    'bio': bleach.clean(bio),
+                    'website': bleach.clean(website),
+                    'social_links': json.loads(social_links)
+                }
+                if profile_picture:
+                    media_id = dm.save_media(username, profile_picture, content_type='profile')
+                    new_profile['profile_picture'] = media_id
+                if dm.update_user_profile(username, new_profile):
+                    st.success("Profile updated successfully")
+                    logger.info(f"Profile updated for {username}")
+                    dm.log_analytics_event(username, 'updated_profile')
+                else:
+                    st.error("Failed to update profile")
+                    logger.error(f"Failed to update profile for {username}")
+            except json.JSONDecodeError:
+                st.error("Invalid JSON format for social links")
+                logger.error(f"Invalid social links JSON for {username}")
+            except Exception as e:
+                st.error(f"Error updating profile: {str(e)}")
+                logger.error(f"Profile update error for {username}: {str(e)}")
+
+    st.subheader("Change Password")
+    with st.form("password_form"):
+        old_password = st.text_input("Old Password", type="password")
+        new_password = st.text_input("New Password", type="password")
+        confirm_new_password = st.text_input("Confirm New Password", type="password")
+        if st.form_submit_button("Update Password"):
+            if new_password != confirm_new_password:
+                st.error("New passwords do not match")
+                logger.error(f"Password mismatch for {username}")
+                return
+            authenticator = stauth.Authenticate(
+                {"credentials": {"usernames": {username: {"password": user.password}}}},
+                "blog_platform",
+                "auth",
+                cookie_expiry_days=30
+            )
+            try:
+                if authenticator._check_credentials({username: old_password}):
+                    if dm.update_password(username, new_password):
+                        st.success("Password updated successfully")
+                        logger.info(f"Password updated for {username}")
+                        dm.log_analytics_event(username, 'password_change')
+                    else:
+                        st.error("Failed to update password")
+                        logger.error(f"Failed to update password for {username}")
+                else:
+                    st.error("Incorrect old password")
+                    logger.error(f"Incorrect old password for {username}")
+            except Exception as e:
+                st.error(f"Error updating password: {str(e)}")
+                logger.error(f"Password update error for {username}: {str(e)}")
+
+
+def create_content_page():
+    """
+    Render content creation page.
+    Allows users to create blogs or case studies with media, tags, and draft options.
+    """
+    st.title("Create New Content")
+    content_type = st.selectbox("Content Type", ["Blog", "Case Study"], help="Choose content type")
+    title = st.text_input("Title", help="Enter a descriptive title")
+    tags = st.text_input("Tags (comma-separated)", help="Add relevant tags, e.g., tech, ai")
+    media_files = st.file_uploader("Upload Media", accept_multiple_files=True, help="Upload images or videos")
+    font = st.selectbox("Font", ["Inter", "Arial", "Times New Roman", "Roboto"], help="Select font style")
+    is_published = st.checkbox("Publish Immediately", value=True, help="Make post visible to public")
+    is_draft = st.checkbox("Save as Draft", value=False, help="Save without publishing")
+
+    dm = get_data_manager()
+    username = st.session_state.username
+
+    if content_type == "Blog":
+        content = st.text_area("Content", height=300, help="Write your blog content here")
+        if st.button("Save Blog", key="save_blog"):
+            if not title.strip() or not content.strip():
+                st.error("Title and content are required")
+                logger.error(f"Blog creation failed for {username}: missing title/content")
+                return
+            media_ids = []
+            if media_files:
+                for file in media_files:
+                    try:
+                        media_id = dm.save_media(username, file)
+                        media_ids.append(media_id)
+                        logger.info(f"Media uploaded for blog by {username}: {media_id}")
+                    except ValueError as e:
+                        st.error(str(e))
+                        logger.error(f"Media upload failed for {username}: {str(e)}")
+                        return
+            try:
+                blog_data = {
+                    'title': title,
+                    'content': content,
+                    'tags': tags,
+                    'media': media_ids,
+                    'font': font,
+                    'is_published': is_published,
+                    'is_draft': is_draft
+                }
+                if is_draft:
+                    draft_id = dm.save_draft(username, 'blog', None, blog_data)
+                    st.success(f"Draft saved! Draft ID: {draft_id}")
+                    logger.info(f"Blog draft {draft_id} saved by {username}")
+                else:
+                    blog_id = dm.save_blog(
+                        username,
+                        title,
+                        content,
+                        tags,
+                        media_ids,
+                        font,
+                        is_published,
+                        is_draft
+                    )
+                    st.success(f"Blog saved! ID: {blog_id}")
+                    st.markdown(f"[View Blog]({APP_URL}/content/blog/{urllib.parse.quote(username)}/{blog_id})")
+                    logger.info(f"Blog {blog_id} created by {username}")
+                    dm.log_analytics_event(username, 'create_blog', 'blog', blog_id)
+            except ValueError as e:
+                st.error(str(e))
+                logger.error(f"Blog creation failed for {username}: {str(e)}")
+            except Exception as e:
+                st.error("An error occurred while saving the blog")
+                logger.error(f"Unexpected error creating blog for {username}: {str(e)}")
+    else:
+        problem = st.text_area("Problem", height=200, help="Describe the problem")
+        solution = st.text_area("Solution", height=200, help="Describe the solution")
+        results = st.text_area("Results", height=200, help="Describe the results")
+        if st.button("Save Case Study", key="save_case_study"):
+            if not title.strip() or not problem.strip() or not solution.strip() or not results.strip():
+                st.error("Title, problem, solution, and results are required")
+                logger.error(f"Case study creation failed for {username}: missing required fields")
+                return
+            media_ids = []
+            if media_files:
+                for file in media_files:
+                    try:
+                        media_id = dm.save_media(username, file)
+                        media_ids.append(media_id)
+                        logger.info(f"Media uploaded for case study by {username}: {media_id}")
+                    except ValueError as e:
+                        st.error(str(e))
+                        logger.error(f"Media upload failed for {username}: {str(e)}")
+                        return
+            try:
+                case_data = {
+                    'title': title,
+                    'problem': problem,
+                    'solution': solution,
+                    'results': results,
+                    'tags': tags,
+                    'media': media_ids,
+                    'font': font,
+                    'is_published': is_published,
+                    'is_draft': is_draft
+                }
+                if is_draft:
+                    draft_id = dm.save_draft(username, 'case_study', None, case_data)
+                    st.success(f"Draft saved! Draft ID: {draft_id}")
+                    logger.info(f"Case study draft {draft_id} saved by {username}")
+                else:
+                    case_id = dm.save_case_study(
+                        username,
+                        title,
+                        problem,
+                        solution,
+                        results,
+                        tags,
+                        media_ids,
+                        font,
+                        is_published,
+                        is_draft
+                    )
+                    st.success(f"Case Study saved! ID: {case_id}")
+                    st.markdown(
+                        f"[View Case Study]({APP_URL}/content/case_study/{urllib.parse.quote(username)}/{case_id})")
+                    logger.info(f"Case study {case_id} created by {username}")
+                    dm.log_analytics_event(username, 'create_case_study', 'case_study', case_id)
+            except ValueError as e:
+                st.error(str(e))
+                logger.error(f"Case study creation failed for {username}: {str(e)}")
+            except Exception as e:
+                st.error("An error occurred while saving the case study")
+                logger.error(f"Unexpected error creating case study for {username}: {str(e)}")
+
+
+def edit_content_page():
+    """
+    Render content editing page.
+    Allows users to edit existing blogs or case studies, including drafts.
+    """
+    st.title("Edit Content")
+    dm = get_data_manager()
+    username = st.session_state.username
+    content_type = st.selectbox("Content Type", ["Blog", "Case Study"], key="edit_content_type")
+    content_source = st.radio("Source", ["Published Content", "Drafts"], key="content_source")
+
+    contents = []
+    if content_source == "Published Content":
+        contents = dm.get_user_content(username, content_type.lower())
+    else:
+        contents = dm.get_drafts(username, content_type.lower())
+
+    content_options = {
+        f"{c.title if hasattr(c, 'title') else c.data.get('title')} (ID: {c.id})": c.id for c in contents}
+    selected_content = st.selectbox("Select Content", list(content_options.keys())
+                                    if content_options else ["No content available"])
+
+    if selected_content == "No content available":
+        st.warning("No content available to edit")
+        return
+
+    content_id = content_options[selected_content]
+    is_draft = content_source == "Drafts"
+    content = None
+    if is_draft:
+        content = next((c for c in contents if c.id == content_id), None)
+        content_data = content.data
+    else:
+        content = dm.get_content_by_id(content_type.lower(), content_id)
+        content_data = content.__dict__
+
+    if not content:
+        st.error("Content not found")
+        logger.error(f"Content {content_type}:{content_id} not found for {username}")
+        return
+
+    with st.form("edit_content_form"):
+        title = st.text_input("Title", value=content_data.get('title', ''))
+        tags = st.text_input("Tags", value=', '.join(content_data.get('tags', [])))
+        media_files = st.file_uploader("Upload New Media", accept_multiple_files=True)
+        font = st.selectbox("Font", ["Inter", "Arial", "Times New Roman", "Roboto"], index=[
+                            "Inter", "Arial", "Times New Roman", "Roboto"].index(content_data.get('font', 'Inter')))
+        is_published = st.checkbox("Is Published", value=content_data.get('is_published', True))
+        is_draft_save = st.checkbox("Save as Draft", value=content_data.get('is_draft', False))
+
+        if content_type == "Blog":
+            content_text = st.text_area("Content", value=content_data.get('content', ''), height=300)
+            if st.form_submit_button("Update Blog"):
+                media_ids = content_data.get('media', [])
+                if media_files:
+                    for file in media_files:
+                        try:
+                            media_id = dm.save_media(username, file)
+                            media_ids.append(media_id)
+                            logger.info(f"Media {media_id} uploaded for blog edit by {username}")
+                        except ValueError as e:
+                            st.error(str(e))
+                            logger.error(f"Media upload failed for blog edit by {username}: {str(e)}")
+                            return
+                try:
+                    if is_draft:
+                        draft_data = {
+                            'title': title,
+                            'content': content_text,
+                            'tags': tags,
+                            'media': media_ids,
+                            'font': font,
+                            'is_published': is_published,
+                            'is_draft': is_draft_save
+                        }
+                        new_draft_id = dm.save_draft(username, 'blog', content_id if content_data.get(
+                            'content_id') else None, draft_data)
+                        st.success(f"Draft updated! Draft ID: {new_draft_id}")
+                        logger.info(f"Blog draft {new_draft_id} updated by {username}")
+                    else:
+                        if dm.update_blog(content_id, title, content_text, tags, media_ids, font, is_published, is_draft_save):
+                            st.success("Blog updated successfully")
+                            logger.info(f"Blog {content_id} updated by {username}")
+                            dm.log_analytics_event(username, 'update_blog', 'blog', content_id)
+                        else:
+                            st.error("Failed to update blog")
+                            logger.error(f"Failed to update blog {content_id} for {username}")
+                except Exception as e:
+                    st.error(f"Error updating blog: {str(e)}")
+                    logger.error(f"Blog update error for {username}: {str(e)}")
+        else:
+            problem = st.text_area("Problem", value=content_data.get('problem', ''), height=200)
+            solution = st.text_area("Solution", value=content_data.get('solution', ''), height=200)
+            results = st.text_area("Results", value=content_data.get('results', ''), height=200)
+            if st.form_submit_button("Update Case Study"):
+                media_ids = content_data.get('media', [])
+                if media_files:
+                    for file in media_files:
+                        try:
+                            media_id = dm.save_media(username, file)
+                            media_ids.append(media_id)
+                            logger.info(f"Media {media_id} uploaded for case study edit by {username}")
+                        except ValueError as e:
+                            st.error(str(e))
+                            logger.error(f"Media upload failed for case study edit by {username}: {str(e)}")
+                            return
+                try:
+                    if is_draft:
+                        draft_data = {
+                            'title': title,
+                            'problem': problem,
+                            'solution': solution,
+                            'results': results,
+                            'tags': tags,
+                            'media': media_ids,
+                            'font': font,
+                            'is_published': is_published,
+                            'is_draft': is_draft_save
+                        }
+                        new_draft_id = dm.save_draft(username, 'case_study',
+                                                     content_id if content_data.get('content_id') else None, draft_data)
+                        st.success(f"Draft updated! Draft ID: {new_draft_id}")
+                        logger.info(f"Case study draft {new_draft_id} updated by {username}")
+                    else:
+                        if dm.update_case_study(content_id, title, problem, solution, results, tags, media_ids, font, is_published, is_draft_save):
+                            st.success("Case Study updated successfully")
+                            logger.info(f"Case study {content_id} updated by {username}")
+                            dm.log_analytics_event(username, 'update_case_study', 'case_study', content_id)
+                        else:
+                            st.error("Failed to update case study")
+                            logger.error(f"Failed to update case study {content_id} for {username}")
+                except Exception as e:
+                    st.error(f"Error updating case study: {str(e)}")
+                    logger.error(f"Case study update error for {username}: {str(e)}")
+
+
+def view_content_page():
+    """
+    Render public content view page.
+    Displays published blogs and case studies with search, tags, and interactions.
+    """
+    st.title("Explore Content")
+    dm = get_data_manager()
+    search_query = st.text_input("Search Content", help="Search by title or content")
+    tag_options = [tag.name for tag in Session().query(Tag).all()]
+    selected_tags = st.multiselect("Filter by Tags", tag_options, help="Select tags to filter content")
+    content_type = st.selectbox("Content Type", ["All", "Blog", "Case Study"], help="Filter by content type")
+
+    content_type_filter = None if content_type == "All" else content_type.lower()
+    contents = dm.search_content(search_query, selected_tags, content_type_filter)
+
     with Session() as session:
-        if content_type == 'blog':
-            content = session.query(Blog).filter_by(id=content_id, username=username).first()
-        else:
-            content = session.query(CaseStudy).filter_by(id=content_id, username=username).first()
+        for content in contents:
+            with st.container():
+                st.markdown("<div class='content-card'>", unsafe_allow_html=True)
+                st.subheader(content.title)
+                if content.content_type == 'blog':
+                    st.write(content.content[:300] + "..." if len(content.content) > 300 else content.content)
+                    content.views += 1
+                else:
+                    st.write(f"Problem: {content.problem[:200]}...")
+                    st.write(f"Solution: {content.solution[:200]}...")
+                    st.write(f"Results: {content.results[:200]}...")
+                    content.views += 1
+                st.write(f"By {content.username} | {content.created_at.strftime('%Y-%m-%d')} | Views: {content.views}")
+                st.markdown(
+                    "**Tags:** " + ", ".join([f"<span class='tag'>{tag}</span>" for tag in content.tags]), unsafe_allow_html=True)
 
-        if not content:
-            st.error("Content not found!")
-            return
+                if content.media:
+                    cols = st.columns(min(len(content.media), 3))
+                    for idx, media_id in enumerate(content.media):
+                        media = session.query(Media).filter_by(id=media_id).first()
+                        if media and media.type == 'image':
+                            try:
+                                img_data = base64.b64decode(media.content)
+                                img = Image.open(io.BytesIO(img_data))
+                                with cols[idx % 3]:
+                                    st.image(img, caption=media.filename, width=200)
+                            except Exception as e:
+                                logger.error(f"Error rendering media {media_id}: {str(e)}")
+                                st.warning(f"Could not display media: {media.filename}")
 
-        dm.increment_views(content_type, content_id)
+                like_count = session.query(Like).filter_by(
+                    content_type=content.content_type, content_id=content.id
+                ).count()
+                st.write(f"Likes: {like_count}")
+                if st.session_state.authenticated:
+                    user = session.query(User).filter_by(username=st.session_state.username).first()
+                    has_liked = session.query(Like).filter_by(
+                        user_id=user.id,
+                        content_type=content.content_type,
+                        content_id=content.id
+                    ).first()
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if not has_liked:
+                            if st.button(f"Like", key=f"like_{content.id}"):
+                                dm.save_like(st.session_state.username, content.content_type, content.id)
+                                dm.log_analytics_event(st.session_state.username, 'like',
+                                                       content.content_type, content.id)
+                                st.rerun()
+                        else:
+                            if st.button(f"Unlike", key=f"unlike_{content.id}"):
+                                dm.remove_like(st.session_state.username, content.content_type, content.id)
+                                dm.log_analytics_event(st.session_state.username, 'unlike',
+                                                       content.content_type, content.id)
+                                st.rerun()
+                    with col2:
+                        if st.button(f"Share", key=f"share_{content.id}"):
+                            st.write(f"Share this {content.content_type}: {content.public_link}")
+                            dm.log_analytics_event(st.session_state.username, 'share', content.content_type, content.id)
 
-        st.markdown(f"""
-        <div class="header">
-            <h1>{bleach.clean(content.title)}</h1>
-            <p>By {bleach.clean(username)} | {content.created_at.strftime('%B %d, %Y')} | 👀 {content.views} views</p>
-        </div>
-        <div class="container">
-        """, unsafe_allow_html=True)
+                st.subheader("Comments")
+                comments = session.query(Comment).filter_by(
+                    content_type=content.content_type, content_id=content.id
+                ).order_by(Comment.created_at.desc()).limit(5).all()
+                for comment in comments:
+                    st.markdown(
+                        f"<div class='comment'>{comment.username}: {comment.comment} ({comment.created_at.strftime('%Y-%m-%d %H:%M')})</div>",
+                        unsafe_allow_html=True
+                    )
 
-        if content_type == 'blog':
-            st.markdown(bleach.clean(content.content), unsafe_allow_html=True)
-        else:
-            st.markdown(f"<b>Problem:</b> {bleach.clean(content.problem)}", unsafe_allow_html=True)
-            st.markdown(f"<b>Solution:</b> {bleach.clean(content.solution)}", unsafe_allow_html=True)
-            st.markdown(f"<b>Results:</b> {bleach.clean(content.results)}", unsafe_allow_html=True)
+                if st.session_state.authenticated:
+                    comment_text = st.text_area(f"Comment on {content.title}", key=f"comment_{content.id}", height=100)
+                    if st.button("Post Comment", key=f"post_{content.id}"):
+                        try:
+                            comment_id = dm.save_comment(st.session_state.username,
+                                                         content.content_type, content.id, comment_text)
+                            st.success("Comment posted!")
+                            logger.info(f"Comment {comment_id} posted by {st.session_state.username}")
+                            dm.log_analytics_event(st.session_state.username, 'comment',
+                                                   content.content_type, content.id)
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+                            logger.error(f"Comment posting failed for {st.session_state.username}: {str(e)}")
 
-        if content.tags:
-            st.markdown(
-                f"<p><b>Tags:</b> {', '.join(bleach.clean(tag) for tag in content.tags)}</p>", unsafe_allow_html=True)
+                st.markdown(f"[View Full {content.content_type.capitalize()}]({content.public_link})")
+                st.markdown("</div>", unsafe_allow_html=True)
+        try:
+            session.commit()
+        except SQLAlchemyError as e:
+            logger.error(f"Error committing view updates: {str(e)}")
+            st.error("Error updating view counts")
 
-        if content.media:
-            st.subheader("Media Gallery")
-            cols = st.columns(3)
-            for idx, media_id in enumerate(content.media):
-                media = dm.get_media(username, media_id)
-                if media:
-                    with cols[idx % 3]:
-                        if media.type == 'image':
-                            st.image(base64.b64decode(media.content), caption=bleach.clean(media.filename), width=200)
-                        elif media.type == 'video':
-                            st.video(base64.b64decode(media.content))
-                        elif media.type == 'gif':
-                            st.image(base64.b64decode(media.content), caption="")
 
-        media_items = [dm.get_media(username, mid) for mid in content.media]
-        pdf_data = export_to_pdf(content_type, content, [m for m in media_items if m])
-        st.download_button(
-            label="Download as PDF",
-            data=pdf_data,
-            file_name=f"{bleach.clean(content.title)}.pdf",
-            mime="application/pdf"
+def analytics_page():
+    """
+    Render user analytics dashboard.
+    Displays content performance metrics and event logs.
+    """
+    st.title("Analytics Dashboard")
+    dm = get_data_manager()
+    username = st.session_state.username
+    start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=30))
+    end_date = st.date_input("End Date", value=datetime.now())
+
+    try:
+        analytics = dm.get_analytics(
+            username,
+            start_date=datetime.combine(start_date, datetime.min.time()),
+            end_date=datetime.combine(end_date, datetime.max.time())
         )
+        st.subheader("Content Performance")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Views", analytics.get('total_views', 0))
+        with col2:
+            st.metric("Total Likes", analytics.get('total_likes', 0))
+        with col3:
+            st.metric("Blogs", analytics.get('blog_count', 0))
+        with col4:
+            st.metric("Case Studies", analytics.get('case_study_count', 0))
 
-        st.subheader("Comments")
-        comments = get_comments(content_type, content_id)
-        for comment in comments:
-            st.markdown('<div class="comment-card">', unsafe_allow_html=True)
-            st.markdown(f"""
-            <p><strong>{bleach.clean(comment.username)}</strong> | {comment.created_at.strftime('%B %d, %Y %H:%M')}</p>
-            <p>{bleach.clean(comment.comment)}</p>
-            """, unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+        with Session() as session:
+            blogs = session.query(Blog.id, Blog.title, Blog.views, Blog.created_at).filter_by(username=username).all()
+            case_studies = session.query(CaseStudy.id, CaseStudy.title, CaseStudy.views,
+                                         CaseStudy.created_at).filter_by(username=username).all()
 
-        if st.session_state.authenticated:
-            with st.form(f"comment_form_{content_id}", clear_on_submit=True):
-                comment_text = st.text_area("Add a Comment", placeholder="Write your comment here...", height=100)
-                if st.form_submit_button("Post Comment"):
-                    if comment_text:
-                        dm.save_comment(content_type, content_id, st.session_state.username, comment_text)
-                        st.success("Comment posted!")
+            if blogs or case_studies:
+                df = pd.DataFrame([
+                    {'ID': b.id, 'Title': b.title, 'Views': b.views, 'Type': 'Blog', 'Created': b.created_at}
+                    for b in blogs
+                ] + [
+                    {'ID': c.id, 'Title': c.title, 'Views': c.views, 'Type': 'Case Study', 'Created': c.created_at}
+                    for c in case_studies
+                ])
+                st.subheader("Views Over Time")
+                st.line_chart(df.groupby(df['Created'].dt.date)['Views'].sum())
+
+                st.subheader("Top Performing Content")
+                st.dataframe(df.sort_values('Views', ascending=False)[['Title', 'Type', 'Views']].head(5))
+
+        st.subheader("Event Logs")
+        events = session.query(AnalyticsEvent).filter_by(user_id=session.query(
+            User).filter_by(username=username).first().id).limit(20).all()
+        event_data = [
+            {'Event Type': e.event_type, 'Content Type': e.content_type or 'N/A',
+                'Content ID': e.content_id or 'N/A', 'Timestamp': e.timestamp, 'Metadata': json.dumps(e.metadata)}
+            for e in events
+        ]
+        st.dataframe(event_data)
+    except SQLAlchemyError as e:
+        logger.error(f"Error retrieving analytics for {username}: {str(e)}")
+        st.error("Error loading analytics data")
+    except Exception as e:
+        logger.error(f"Unexpected error in analytics for {username}: {str(e)}")
+        st.error("An unexpected error occurred")
+
+
+def admin_dashboard():
+    """
+    Render admin dashboard for content and user management.
+    Restricted to admin users.
+    """
+    if not st.session_state.get('is_admin', False):
+        st.error("Access restricted to administrators")
+        logger.warning(f"Non-admin {st.session_state.username} attempted to access admin dashboard")
+        return
+
+    st.title("Admin Dashboard")
+    dm = get_data_manager()
+
+    st.subheader("Manage Users")
+    try:
+        with Session() as session:
+            users = session.query(User).all()
+            user_data = [
+                {
+                    'ID': u.id,
+                    'Username': u.username,
+                    'Email': u.email,
+                    'Active': u.is_active,
+                    'Admin': u.is_admin,
+                    'Last Login': u.last_login.strftime('%Y-%m-%d %H:%M') if u.last_login else 'Never'
+                }
+                for u in users
+            ]
+            st.dataframe(user_data)
+
+            st.subheader("Toggle User Status")
+            user_to_toggle = st.selectbox("Select User", [u.username for u in users], key="toggle_user")
+            new_status = st.selectbox("Set Status", ["Active", "Inactive"], key="user_status")
+            if st.button("Update User Status"):
+                user = session.query(User).filter_by(username=user_to_toggle).first()
+                user.is_active = (new_status == "Active")
+                session.commit()
+                st.success(f"User {user_to_toggle} status updated to {new_status}")
+                logger.info(f"Admin {st.session_state.username} updated {user_to_toggle} status to {new_status}")
+                dm.log_analytics_event(st.session_state.username, 'admin_update_user',
+                                       metadata={'user': user_to_toggle})
+    except SQLAlchemyError as e:
+        logger.error(f"Error managing users in admin dashboard: {str(e)}")
+        st.error("Error managing users")
+
+    st.subheader("Manage Content")
+    content_type = st.selectbox("Content Type", ["Blog", "Case Study"], key="admin_content_type")
+    try:
+        contents = dm.get_user_content("all", content_type.lower())
+        for content in contents:
+            with st.expander(f"{content.title} by {content.username}"):
+                st.write(f"Published: {content.is_published}, Draft: {content.is_draft}")
+                st.write(f"Created: {content.created_at}, Updated: {content.updated_at}")
+                if st.button(f"Delete {content.title}", key=f"delete_{content.id}"):
+                    if dm.delete_content(content_type.lower(), content.id):
+                        st.success(f"{content.title} deleted")
+                        logger.info(f"Admin {st.session_state.username} deleted {content_type}:{content.id}")
+                        dm.log_analytics_event(st.session_state.username,
+                                               'admin_delete_content', content_type, content.id)
                         st.rerun()
                     else:
-                        st.error("Comment cannot be empty!")
+                        st.error("Failed to delete content")
+                        logger.error(f"Failed to delete {content_type}:{content.id}")
+    except SQLAlchemyError as e:
+        logger.error(f"Error managing content in admin dashboard: {str(e)}")
+        st.error("Error managing content")
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
-
-def edit_content():
-    if 'edit_content' not in st.session_state:
-        st.error("No content selected for editing!")
+def public_profile_page():
+    """
+    Render public profile page for a user.
+    Displays user bio, social links, and public content.
+    """
+    st.title("View User Profile")
+    username = st.text_input("Enter Username", help="Enter the username to view their profile")
+    if not username:
         return
 
-    content_type = st.session_state.edit_content['type']
-    content_id = st.session_state.edit_content['id']
+    dm = get_data_manager()
+    try:
+        with Session() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                st.error("User not found")
+                logger.error(f"Public profile not found for {username}")
+                return
+            profile = user.profile or {}
+            st.subheader(f"{username}'s Profile")
+            st.write(f"**Bio**: {profile.get('bio', 'No bio available')}")
+            st.write(f"**Website**: {profile.get('website', 'No website') or 'None'}")
+            social_links = profile.get('social_links', {})
+            if social_links:
+                st.subheader("Social Links")
+                for platform, link in social_links.items():
+                    st.markdown(f"- [{platform}]({link})")
 
-    with Session() as session:
-        if content_type == 'blog':
-            content = session.query(Blog).filter_by(id=content_id).first()
-        else:
-            content = session.query(CaseStudy).filter_by(id=content_id).first()
+            profile_picture = profile.get('profile_picture')
+            if profile_picture:
+                media = session.query(Media).filter_by(id=profile_picture).first()
+                if media and media.type == 'image':
+                    try:
+                        img_data = base64.b64decode(media.content)
+                        img = Image.open(io.BytesIO(img_data))
+                        st.image(img, caption="Profile Picture", width=150)
+                    except Exception as e:
+                        logger.error(f"Error rendering profile picture for {username}: {str(e)}")
 
-        if not content:
-            st.error("Content not found!")
+            if st.session_state.authenticated and st.session_state.username != username:
+                user_obj = session.query(User).filter_by(username=st.session_state.username).first()
+                following = user_obj.profile.get('following', [])
+                if username not in following:
+                    if st.button(f"Follow {username}"):
+                        following.append(username)
+                        dm.update_user_profile(st.session_state.username, {'following': following})
+                        st.success(f"You are now following {username}")
+                        logger.info(f"{st.session_state.username} followed {username}")
+                        dm.log_analytics_event(st.session_state.username, 'follow',
+                                               metadata={'followed_user': username})
+                        st.rerun()
+                else:
+                    if st.button(f"Unfollow {username}"):
+                        following.remove(username)
+                        dm.update_user_profile(st.session_state.username, {'following': following})
+                        st.success(f"You have unfollowed {username}")
+                        logger.info(f"{st.session_state.username} unfollowed {username}")
+                        dm.log_analytics_event(st.session_state.username, 'unfollow',
+                                               metadata={'unfollowed_user': username})
+                        st.rerun()
+
+            st.subheader("Public Content")
+            blogs = session.query(Blog).filter_by(username=username, is_published=True).all()
+            case_studies = session.query(CaseStudy).filter_by(username=username, is_published=True).all()
+            if not (blogs or case_studies):
+                st.info("No public content available")
+            for content in blogs + case_studies:
+                st.markdown(f"- [{content.title}]({content.public_link}) ({content.content_type.capitalize()})")
+            dm.log_analytics_event(st.session_state.username if st.session_state.authenticated else None,
+                                   'view_profile', metadata={'profile_user': username})
+    except SQLAlchemyError as e:
+        logger.error(f"Error loading public profile for {username}: {str(e)}")
+        st.error("Error loading profile")
+
+
+def notifications_page():
+    """
+    Render notifications page.
+    Displays user notifications with read/unread status.
+    """
+    st.title("Notifications")
+    if not st.session_state.authenticated:
+        st.warning("Please log in to view notifications")
+        return
+
+    dm = get_data_manager()
+    username = st.session_state.username
+    show_unread = st.checkbox("Show Unread Only", value=True)
+
+    try:
+        notifications = dm.get_notifications(username, unread_only=show_unread)
+        if not notifications:
+            st.info("No notifications available")
             return
 
-        st.markdown(f"""
-        <div class="header">
-            <h1>✎ Edit {content_type.capitalize()}</h1>
-        </div>
-        <div class="container">
-        """, unsafe_allow_html=True)
-
-        if content_type == 'blog':
-            title = st.text_input("Blog Title", value=content.title, key="edit_title")
-            content_text = st.text_area("Content", value=content.content, height=300, key="edit_content")
-            tags = st.text_input("Tags (comma-separated)", value=", ".join(content.tags), key="edit_tags")
-            font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"], index=[
-                                "Inter", "Roboto", "Merriweather", "Lora"].index(content.font), key="edit_font")
-            is_published = st.checkbox("Publish", value=content.is_published, key="edit_publish")
-            uploaded_files = st.file_uploader("Upload New Media", accept_multiple_files=True, type=[
-                                              'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="edit_media")
-
-            media_ids = content.media
-            if uploaded_files:
-                for file in uploaded_files:
-                    media_id = dm.save_media(st.session_state.username, file)
-                    media_ids.append(media_id)
-
-            if st.button("Update Blog", type="primary"):
-                content.title = bleach.clean(title)
-                content.content = bleach.clean(content_text)
-                content.tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
-                content.font = font
-                content.media = media_ids
-                content.is_published = is_published
-                content.updated_at = datetime.utcnow()
-                session.commit()
-                st.success("Blog updated!")
-                st.rerun()
-
-        else:
-            title = st.text_input("Title", value=content.title, key="edit_title")
-            problem = st.text_area("Problem", value=content.problem, height=150, key="edit_problem")
-            solution = st.text_area("Solution", value=content.solution, height=150, key="edit_solution")
-            results = st.text_area("Results", value=content.results, height=150, key="edit_results")
-            tags = st.text_input("Tags (comma-separated)", value=", ".join(content.tags), key="edit_tags")
-            font = st.selectbox("Font Style", ["Inter", "Roboto", "Merriweather", "Lora"],
-                                index=["Inter", "Roboto", "Merriweather", "Lora"].index(content.font),
-                                key="edit_font")
-            is_published = st.checkbox("Publish", value=content.is_published, key="edit_publish")
-            uploaded_files = st.file_uploader("Upload New Media", accept_multiple_files=True, type=[
-                                              'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="edit_media")
-
-            media_ids = content.media
-            if uploaded_files:
-                for file in uploaded_files:
-                    media_id = dm.save_media(st.session_state.username, file)
-                    media_ids.append(media_id)
-
-            if st.button("Update Case Study", type="primary"):
-                content.title = bleach.clean(title)
-                content.problem = bleach.clean(problem)
-                content.solution = bleach.clean(solution)
-                content.results = bleach.clean(results)
-                content.tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
-                content.font = font
-                content.media = media_ids
-                content.is_published = is_published
-                content.updated_at = datetime.utcnow()
-                session.commit()
-                st.success("Case study updated!")
-                st.rerun()
-
-        st.markdown("</div>", unsafe_allow_html=True)
-# Main Function
+        for notification in notifications:
+            with st.container():
+                st.markdown(
+                    f"<div class='notification'>{'📬 ' if not notification.is_read else ''}{notification.message} "
+                    f"({notification.created_at.strftime('%Y-%m-%d %H:%M')})</div>",
+                    unsafe_allow_html=True
+                )
+                if notification.content_type and notification.content_id:
+                    content = dm.get_content_by_id(notification.content_type, notification.content_id)
+                    if content:
+                        st.markdown(f"[View {notification.content_type.capitalize()}]({content.public_link})")
+                if not notification.is_read:
+                    if st.button("Mark as Read", key=f"read_{notification.id}"):
+                        dm.mark_notification_read(notification.id)
+                        st.rerun()
+        dm.log_analytics_event(username, 'view_notifications')
+    except SQLAlchemyError as e:
+        logger.error(f"Error loading notifications for {username}: {str(e)}")
+        st.error("Error loading notifications")
 
 
-def get_data_manager():
-    return DataManager()
+def tag_explorer_page():
+    """
+    Render tag explorer page.
+    Allows users to browse content by tags.
+    """
+    st.title("Explore by Tags")
+    dm = get_data_manager()
+    try:
+        with Session() as session:
+            tags = session.query(Tag).all()
+            if not tags:
+                st.info("No tags available")
+                return
+            selected_tag = st.selectbox("Select Tag", [tag.name for tag in tags])
+            if selected_tag:
+                tag = session.query(Tag).filter_by(name=selected_tag).first()
+                blogs = tag.blogs
+                case_studies = tag.case_studies
+                st.subheader(f"Content tagged with '{selected_tag}'")
+                for content in blogs + case_studies:
+                    if content.is_published:
+                        with st.container():
+                            st.markdown("<div class='content-card'>", unsafe_allow_html=True)
+                            st.write(f"**{content.title}** ({content.content_type.capitalize()})")
+                            st.write(f"By {content.username} | {content.created_at.strftime('%Y-%m-%d')}")
+                            st.markdown(f"[View Content]({content.public_link})")
+                            st.markdown("</div>", unsafe_allow_html=True)
+                dm.log_analytics_event(
+                    st.session_state.username if st.session_state.authenticated else None,
+                    'explore_tag',
+                    metadata={'tag': selected_tag}
+                )
+    except SQLAlchemyError as e:
+        logger.error(f"Error exploring tags: {str(e)}")
+        st.error("Error loading tag content")
+
+
+def draft_management_page():
+    """
+    Render draft management page.
+    Allows users to view, edit, or publish drafts.
+    """
+    st.title("Manage Drafts")
+    if not st.session_state.authenticated:
+        st.warning("Please log in to manage drafts")
+        return
+
+    dm = get_data_manager()
+    username = st.session_state.username
+    content_type = st.selectbox("Content Type", ["Blog", "Case Study"], key="draft_content_type")
+
+    try:
+        with Session() as session:
+            drafts = dm.get_drafts(username, content_type.lower())
+            if not drafts:
+                st.info("No drafts available")
+                return
+
+            for draft in drafts:
+                with st.expander(f"{draft.data.get('title', 'Untitled')} (Created: {draft.created_at.strftime('%Y-%m-%d')})"):
+                    st.write(f"Content Type: {draft.content_type.capitalize()}")
+                    if st.button("Edit Draft", key=f"edit_draft_{draft.id}"):
+                        st.session_state.edit_draft_id = draft.id
+                        st.session_state.edit_draft_type = content_type.lower()
+                        st.rerun()
+                    if st.button("Publish Draft", key=f"publish_draft_{draft.id}"):
+                        data = draft.data
+                        try:
+                            if content_type.lower() == 'blog':
+                                blog_id = dm.save_blog(
+                                    username,
+                                    data.get('title'),
+                                    data.get('content'),
+                                    ', '.join(data.get('tags', [])),
+                                    data.get('media', []),
+                                    data.get('font', 'Inter'),
+                                    True,
+                                    False
+                                )
+                                draft.content_id = blog_id
+                                session.commit()
+                                st.success(f"Blog published! ID: {blog_id}")
+                                logger.info(f"Draft {draft.id} published as blog {blog_id} by {username}")
+                                dm.log_analytics_event(username, 'publish_draft', 'blog', blog_id)
+                            else:
+                                case_id = dm.save_case_study(
+                                    username,
+                                    data.get('title'),
+                                    data.get('problem'),
+                                    data.get('solution'),
+                                    data.get('results'),
+                                    ', '.join(data.get('tags', [])),
+                                    data.get('media', []),
+                                    data.get('font', 'Inter'),
+                                    True,
+                                    False
+                                )
+                                draft.content_id = case_id
+                                session.commit()
+                                st.success(f"Case Study published! ID: {case_id}")
+                                logger.info(f"Draft {draft.id} published as case study {case_id} by {username}")
+                                dm.log_analytics_event(username, 'publish_draft', 'case_study', case_id)
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+                            logger.error(f"Error publishing draft {draft.id}: {str(e)}")
+    except SQLAlchemyError as e:
+        logger.error(f"Error managing drafts for {username}: {str(e)}")
+        st.error("Error loading drafts")
+
+    if 'edit_draft_id' in st.session_state:
+        draft_id = st.session_state.edit_draft_id
+        draft_type = st.session_state.edit_draft_type
+        draft = next((d for d in drafts if d.id == draft_id), None)
+        if draft:
+            with st.form("edit_draft_form"):
+                data = draft.data
+                title = st.text_input("Title", value=data.get('title', ''))
+                tags = st.text_input("Tags", value=', '.join(data.get('tags', [])))
+                media_files = st.file_uploader("Upload New Media", accept_multiple_files=True)
+                font = st.selectbox("Font", ["Inter", "Arial", "Times New Roman", "Roboto"], index=[
+                                    "Inter", "Arial", "Times New Roman", "Roboto"].index(data.get('font', 'Inter')))
+                is_published = st.checkbox("Publish Immediately", value=data.get('is_published', True))
+
+                if draft_type == 'blog':
+                    content = st.text_area("Content", value=data.get('content', ''), height=300)
+                    if st.form_submit_button("Update Draft"):
+                        media_ids = data.get('media', [])
+                        if media_files:
+                            for file in media_files:
+                                media_id = dm.save_media(username, file)
+                                media_ids.append(media_id)
+                        new_data = {
+                            'title': title,
+                            'content': content,
+                            'tags': [t.strip() for t in tags.split(',') if t.strip()],
+                            'media': media_ids,
+                            'font': font,
+                            'is_published': is_published,
+                            'is_draft': True
+                        }
+                        try:
+                            new_draft_id = dm.save_draft(username, 'blog', draft.content_id, new_data)
+                            st.success(f"Draft updated! New Draft ID: {new_draft_id}")
+                            logger.info(f"Draft {draft_id} updated to {new_draft_id} by {username}")
+                            del st.session_state.edit_draft_id
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+                            logger.error(f"Error updating draft {draft_id}: {str(e)}")
+                else:
+                    problem = st.text_area("Problem", value=data.get('problem', ''), height=200)
+                    solution = st.text_area("Solution", value=data.get('solution', ''), height=200)
+                    results = st.text_area("Results", value=data.get('results', ''), height=200)
+                    if st.form_submit_button("Update Draft"):
+                        media_ids = data.get('media', [])
+                        if media_files:
+                            for file in media_files:
+                                media_id = dm.save_media(username, file)
+                                media_ids.append(media_id)
+                        new_data = {
+                            'title': title,
+                            'problem': problem,
+                            'solution': solution,
+                            'results': results,
+                            'tags': [t.strip() for t in tags.split(',') if t.strip()],
+                            'media': media_ids,
+                            'font': font,
+                            'is_published': is_published,
+                            'is_draft': True
+                        }
+                        try:
+                            new_draft_id = dm.save_draft(username, 'case_study', draft.content_id, new_data)
+                            st.success(f"Draft updated! New Draft ID: {new_draft_id}")
+                            logger.info(f"Draft {draft_id} updated to {new_draft_id} by {username}")
+                            del st.session_state.edit_draft_id
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+                            logger.error(f"Error updating draft {draft_id}: {str(e)}")
+
+
+def user_settings_page():
+    """
+    Render user settings page.
+    Allows users to configure preferences and account settings.
+    """
+    st.title("User Settings")
+    if not st.session_state.authenticated:
+        st.warning("Please log in to access settings")
+        return
+
+    dm = get_data_manager()
+    username = st.session_state.username
+    try:
+        with Session() as session:
+            user = session.query(User).filter_by(username=username).first()
+            profile = user.profile or {}
+
+            st.subheader("Notification Preferences")
+            with st.form("notification_prefs"):
+                notify_comments = st.checkbox("Notify on new comments", value=profile.get('notify_comments', True))
+                notify_likes = st.checkbox("Notify on new likes", value=profile.get('notify_likes', True))
+                notify_followers = st.checkbox("Notify on new followers", value=profile.get('notify_followers', True))
+                if st.form_submit_button("Save Notification Preferences"):
+                    profile.update({
+                        'notify_comments': notify_comments,
+                        'notify_likes': notify_likes,
+                        'notify_followers': notify_followers
+                    })
+                    dm.update_user_profile(username, profile)
+                    st.success("Notification preferences updated")
+                    logger.info(f"Notification preferences updated for {username}")
+                    dm.log_analytics_event(username, 'update_settings')
+
+            st.subheader("Account Management")
+            if st.button("Deactivate Account"):
+                if st.checkbox("Confirm Deactivation"):
+                    user.is_active = False
+                    session.commit()
+                    st.session_state.authenticated = False
+                    st.session_state.username = None
+                    st.success("Account deactivated")
+                    logger.info(f"Account deactivated for {username}")
+                    dm.log_analytics_event(username, 'deactivate_account')
+                    st.rerun()
+    except SQLAlchemyError as e:
+        logger.error(f"Error updating settings for {username}: {str(e)}")
+        st.error("Error updating settings")
 
 
 def enhanced_main():
-    load_css()
-
-    if 'authenticated' not in st.session_state:
+    """
+    Main application entry point.
+    Orchestrates navigation and page rendering.
+    """
+    custom_css()
+    if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
         st.session_state.username = None
-        st.session_state.user_password = None
-
-    start_time = time.time()
-    query_params = st.query_params
-    page = query_params.get('page', [''])[0]
-    username = query_params.get('username', [''])[0]
-    content_type = query_params.get('content_type', [''])[0]
-    content_id = query_params.get('content_id', [''])[0]
-
-    if page == 'content' and username and content_type and content_id:
-        content_view()
-        st.write(f"Content view took {time.time() - start_time:.2f} seconds")
-        return
+        st.session_state.is_admin = False
 
     if not st.session_state.authenticated:
+        st.title("Welcome to GalaxyWrite")
+        st.markdown("A platform for sharing blogs, case studies, and ideas.")
         login_page()
-        st.write(f"Login page took {time.time() - start_time:.2f} seconds")
+        st.subheader("New User? Sign Up")
+        signup_page()
         return
 
-    with st.sidebar:
-        st.markdown('<div class="sidebar-title">🌌 GalaxyWrite</div>', unsafe_allow_html=True)
-        page_options = [
-            "Main Page",
-            "Dashboard",
-            "Write Blog",
-            "Create Case Study",
-            "My Content",
-            "Templates",
-            "Analytics",
-            "Search & Filter",
-            "Profile Settings",
-            "Export Content",
-            "Logout"
-        ]
-        page = st.selectbox("Navigate", options=page_options, key="nav_select")
-        st.markdown(
-            f'<p class="text-lg font-semibold">👋 Welcome, {st.session_state.username}!</p>', unsafe_allow_html=True)
-        dm = get_data_manager()
-        user_blogs = dm.get_user_blogs(st.session_state.username)
-        user_cases = dm.get_user_case_studies(st.session_state.username)
-        st.markdown(f'<p>📖 <strong>Blogs:</strong> {len(user_blogs)}</p>', unsafe_allow_html=True)
-        st.markdown(f'<p>📚 <strong>Case Studies:</strong> {len(user_cases)}</p>', unsafe_allow_html=True)
-        total_views = sum(blog.views for blog in user_blogs) + sum(case.views for case in user_cases)
-        st.markdown(f'<p>👀 <strong>Total Views:</strong> {total_views}</p>', unsafe_allow_html=True)
-        if st.button("🚪 Logout", key="logout_btn", type="primary"):
+    st.sidebar.title(f"Welcome, {st.session_state.username}")
+    pages = [
+        "View Content",
+        "Create Content",
+        "Edit Content",
+        "Analytics",
+        "Profile",
+        "Public Profile",
+        "Notifications",
+        "Tag Explorer",
+        "Draft Management",
+        "Settings",
+        "Logout"
+    ]
+    if st.session_state.is_admin:
+        pages.insert(-1, "Admin Dashboard")
+
+    page = st.sidebar.selectbox("Navigate", pages, help="Select a page to view")
+
+    try:
+        if page == "View Content":
+            view_content_page()
+        elif page == "Create Content":
+            create_content_page()
+        elif page == "Edit Content":
+            edit_content_page()
+        elif page == "Analytics":
+            analytics_page()
+        elif page == "Profile":
+            profile_page()
+        elif page == "Public Profile":
+            public_profile_page()
+        elif page == "Notifications":
+            notifications_page()
+        elif page == "Tag Explorer":
+            tag_explorer_page()
+        elif page == "Draft Management":
+            draft_management_page()
+        elif page == "Settings":
+            user_settings_page()
+        elif page == "Admin Dashboard":
+            admin_dashboard()
+        elif page == "Logout":
             st.session_state.authenticated = False
             st.session_state.username = None
-            st.session_state.user_password = None
-            st.query_params.clear()
+            st.session_state.is_admin = False
+            st.success("Logged out successfully")
+            logger.info(f"User {st.session_state.username} logged out")
+            dm = get_data_manager()
+            dm.log_analytics_event(st.session_state.username, 'logout')
             st.rerun()
+    except Exception as e:
+        logger.error(f"Unexpected error in main: {str(e)}")
+        st.error("An unexpected error occurred. Please try again.")
 
-    if page == "Main Page":
-        main_page()
-    elif page == "Dashboard":
-        dashboard()
-    elif page == "Write Blog":
-        blog_editor()
-    elif page == "Create Case Study":
-        case_study_editor()
-    elif page == "My Content":
-        my_content()
-    elif page == "Templates":
-        content_templates()
-    elif page == "Analytics":
-        analytics_dashboard()
-    elif page == "Search & Filter":
-        content_search_and_filter()
-    elif page == "Profile Settings":
-        profile_settings()
-    elif page == "Export Content":
-        export_content()
-    elif page == "Edit Content":
-        edit_content()
-    elif page == "Logout":
-        st.session_state.authenticated = False
-        st.session_state.username = None
-        st.session_state.user_password = None
-        st.query_params.clear()
-        st.rerun()
+# Helper Functions
 
-    st.write(f"Page {page} loaded in {time.time() - start_time:.2f} seconds")
-    st.markdown("""
-    <div class="text-center text-gray-400 py-4">
-        <p>GalaxyWrite - Your Cosmic Blogging Platform</p>
-        <p>Built with 🌠 by passionate developers</p>
-    </div>
-    """, unsafe_allow_html=True)
+
+def validate_input(text: str, max_length: int = 1000) -> bool:
+    """
+    Validate input text for length and content.
+    Args:
+        text: Input text to validate.
+        max_length: Maximum allowed length.
+    Returns:
+        bool: True if valid, False otherwise.
+    """
+    if not text:
+        return False
+    if len(text) > max_length:
+        logger.warning(f"Input text exceeds max length: {len(text)}")
+        return False
+    return True
+
+
+def render_media(media: Media, width: int = 300) -> None:
+    """
+    Render media content in Streamlit.
+    Args:
+        media: Media object.
+        width: Image width in pixels.
+    """
+    try:
+        if media.type == 'image':
+            img_data = base64.b64decode(media.content)
+            img = Image.open(io.BytesIO(img_data))
+            st.image(img, caption=media.filename, width=width)
+        elif media.type == 'video':
+            st.video(base64.b64decode(media.content))
+        else:
+            st.warning(f"Unsupported media type: {media.type}")
+    except Exception as e:
+        logger.error(f"Error rendering media {media.id}: {str(e)}")
+        st.warning(f"Could not display media: {media.filename}")
+
+
+def get_popular_tags(limit: int = 10) -> List[str]:
+    """
+    Retrieve popular tags based on usage.
+    Args:
+        limit: Maximum number of tags to return.
+    Returns:
+        List[str]: List of tag names.
+    """
+    try:
+        with Session() as session:
+            tags = session.query(Tag).join(blog_tags).group_by(Tag.id).order_by(
+                func.count(blog_tags.c.blog_id).desc()).limit(limit).all()
+            tags += session.query(Tag).join(case_study_tags).group_by(Tag.id).order_by(
+                func.count(case_study_tags.c.case_study_id).desc()).limit(limit).all()
+            return list(set(tag.name for tag in tags))[:limit]
+    except SQLAlchemyError as e:
+        logger.error(f"Error retrieving popular tags: {str(e)}")
+        return []
 
 
 if __name__ == "__main__":
-    dm = get_data_manager()
     enhanced_main()
