@@ -1,17 +1,26 @@
 import streamlit as st
-import hashlib
-import json
-import os
+import bcrypt
+import streamlit_authenticator as stauth
+import sqlite3
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from datetime import datetime
-import re
-from typing import Dict, List, Optional
-import base64
-from io import BytesIO
+import uuid
+import urllib.parse
+import os
+import bleach
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
-import uuid
-import urllib.parse
+from io import BytesIO
+import base64
+from typing import List, Dict, Optional
+import json
+
+# Environment variable for Streamlit Cloud URL
+APP_URL = "https://gallaxywrite.streamlit.app"
+
 
 # Page configuration
 st.set_page_config(
@@ -21,479 +30,371 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for space and galaxy theme
+# Professional UI with Tailwind CSS
 
 
 def load_css():
     st.markdown("""
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
-    /* Import Google Fonts */
-    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&family=Playfair+Display:wght@400;500;600;700&family=Roboto:wght@300;400;700&family=Open+Sans:wght@300;400;700&family=Lora:wght@400;700&family=Poppins:wght@300;400;700&display=swap');
-
-    /* Global Styles */
-    .stApp {
-        background: linear-gradient(180deg, #0a0a23 0%, #1a1a3d 100%);
-        font-family: 'Montserrat', sans-serif;
-        color: #e0e0ff;
-    }
-
-    /* Fixed Header */
-    .fixed-header {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        background: rgba(10, 10, 35, 0.95);
-        backdrop-filter: blur(15px);
-        padding: 1rem 2rem;
-        z-index: 1000;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        text-align: center;
-    }
-
-    .fixed-header .app-header {
-        margin: 0;
-        font-size: 2.5rem;
-        background: linear-gradient(135deg, #5c5cff 0%, #d400d4 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-family: 'Playfair Display', serif;
-        font-weight: 700;
-        text-shadow: 0 2px 8px rgba(92, 92, 255, 0.3);
-    }
-
-    /* Content padding to avoid overlap with fixed header */
-    .main-container {
-        padding-top: 80px;
-        background: rgba(10, 10, 35, 0.9);
-        backdrop-filter: blur(15px);
-        border-radius: 20px;
-        padding: 2rem;
-        margin: 1rem;
-        box-shadow: 0 25px 50px rgba(0, 0, 0, 0.3);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    /* Animated background with stars and asteroids */
-    body::before {
-        content: '';
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: url('https://www.transparenttextures.com/patterns/stardust.png');
-        opacity: 0.2;
-        z-index: -1;
-        animation: moveStars 100s linear infinite;
-    }
-
-    @keyframes moveStars {
-        0% { transform: translateY(0); }
-        100% { transform: translateY(-1000px); }
-    }
-
-    /* Hide Streamlit branding */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-
-    /* Button Styles */
-    .stButton > button {
-        background: linear-gradient(135deg, #5c5cff 0%, #d400d4 100%);
-        color: white;
-        border: none;
-        border-radius: 12px;
-        padding: 0.75rem 2rem;
-        font-weight: 600;
-        font-size: 1rem;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(92, 92, 255, 0.4);
-        width: 100%;
-    }
-
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(92, 92, 255, 0.6);
-    }
-
-    /* Input Styles */
-    .stTextInput > div > div > input {
-        border-radius: 12px;
-        border: 2px solid #2a2a5e;
-        background: rgba(255, 255, 255, 0.9);
-        color: #000000;
-        padding: 0.75rem 1rem;
-        font-size: 1rem;
-        transition: all 0.3s ease;
-    }
-
-    .stTextInput > div > div > input:focus {
-        border-color: #5c5cff;
-        box-shadow: 0 0 0 3px rgba(92, 92, 255, 0.2);
-    }
-
-    /* Text Area Styles */
-    .stTextArea textarea {
-        border-radius: 12px;
-        border: 2px solid #2a2a5e;
-        background: rgba(255, 255, 255, 0.9);
-        color: #000000;
-        font-family: 'Montserrat', sans-serif;
-        line-height: 1.7;
-    }
-
-    .stTextArea textarea:focus {
-        border-color: #5c5cff;
-        box-shadow: 0 0 0 3px rgba(92, 92, 255, 0.2);
-    }
-
-    /* Sidebar Styles */
-    .css-1d391kg {
-        background: linear-gradient(180deg, #0a0a23 0%, #1a1a3d 100%);
-        border-right: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .sidebar-title {
-        color: #e0e0ff;
-        font-size: 1.8rem;
-        font-weight: 600;
-        margin-bottom: 1.5rem;
-        text-align: center;
-        font-family: 'Playfair Display', serif;
-    }
-
-    /* Blog Card Styles */
-    .blog-card {
-        background: rgba(20, 20, 50, 0.95);
-        border-radius: 16px;
-        padding: 2rem;
-        margin: 1rem 0;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        transition: all 0.3s ease;
-        position: relative;
-        overflow: hidden;
-    }
-
-    .blog-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 20px 40px rgba(92, 92, 255, 0.3);
-    }
-
-    .blog-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 4px;
-        background: linear-gradient(135deg, #5c5cff 0%, #d400d4 100%);
-    }
-
-    .blog-title {
-        font-family: 'Playfair Display', serif;
-        font-size: 1.8rem;
-        font-weight: 600;
-        color: #e0e0ff;
-        margin-bottom: 0.5rem;
-    }
-
-    .blog-meta {
-        color: #a0a0cc;
-        font-size: 0.9rem;
-        margin-bottom: 1rem;
-    }
-
-    .blog-content {
-        color: #d0d0ff;
-        line-height: 1.7;
-    }
-
-    /* Case Study Styles */
-    .case-study-card {
-        background: linear-gradient(135deg, #5c5cff 0%, #d400d4 100%);
-        color: white;
-        border-radius: 16px;
-        padding: 2rem;
-        margin: 1rem 0;
-        box-shadow: 0 15px 35px rgba(92, 92, 255, 0.4);
-        transition: all 0.3s ease;
-    }
-
-    .case-study-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 25px 50px rgba(92, 92, 255, 0.5);
-    }
-
-    /* Editor Styles */
-    .editor-container {
-        background: rgba(20, 20, 50, 0.95);
-        border-radius: 16px;
-        padding: 2rem;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-        margin: 1rem 0;
-    }
-
-    /* Success/Error Messages */
-    .stSuccess {
-        background: linear-gradient(135deg, #00ddeb 0%, #92fe9d 100%);
-        color: white;
-        border-radius: 12px;
-        padding: 1rem;
-        border: none;
-    }
-
-    .stError {
-        background: linear-gradient(135deg, #fc466b 0%, #3f5efb 100%);
-        color: white;
-        border-radius: 12px;
-        padding: 1rem;
-        border: none;
-    }
-
-    /* Dashboard Stats */
-    .stat-card {
-        background: rgba(20, 20, 50, 0.95);
-        border-radius: 16px;
-        padding: 2rem;
-        text-align: center;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-        border-top: 4px solid #5c5cff;
-    }
-
-    .stat-number {
-        font-size: 2.5rem;
-        font-weight: 700;
-        color: #5c5cff;
-        margin-bottom: 0.5rem;
-    }
-
-    .stat-label {
-        color: #a0a0cc;
-        font-size: 1rem;
-        font-weight: 500;
-    }
-
-    /* Tags */
-    .tag {
-        display: inline-block;
-        background: linear-gradient(135deg, #5c5cff 0%, #d400d4 100%);
-        color: white;
-        padding: 0.25rem 0.75rem;
-        border-radius: 20px;
-        font-size: 0.8rem;
-        margin-right: 0.5rem;
-        margin-bottom: 0.5rem;
-    }
-
-    /* Loading Animation */
-    .loading {
-        display: inline-block;
-        width: 20px;
-        height: 20px;
-        border: 3px solid rgba(92, 92, 255, 0.3);
-        border-radius: 50%;
-        border-top-color: #5c5cff;
-        animation: spin 1s ease-in-out infinite;
-    }
-
-    @keyframes spin {
-        to { transform: rotate(360deg); }
-    }
-
-    /* Media Preview */
-    .media-preview {
-        max-width: 100%;
-        border-radius: 12px;
-        margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(92, 92, 255, 0.3);
-    }
-
-    /* Responsive Design */
-    @media (max-width: 768px) {
-        .fixed-header .app-header {
-            font-size: 2rem;
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@400;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(180deg, #0a0a23 0%, #1a1a3d 100%);
+            color: #e0e0ff;
         }
 
-        .main-container {
-            margin: 0.5rem;
-            padding: 1rem;
-            padding-top: 70px;
+        .header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: rgba(10, 10, 35, 0.95);
+            backdrop-filter: blur(15px);
+            z-index: 50;
+            padding: 1rem 2rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        .blog-card, .case-study-card {
+        .header h1 {
+            font-family: 'Playfair Display', serif;
+            font-size: 2.25rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #5c5cff, #d400d4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-align: center;
+        }
+
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 6rem 1rem 2rem;
+        }
+
+        .card {
+            background: rgba(20, 20, 50, 0.95);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 30px rgba(92, 92, 255, 0.3);
+        }
+
+        .case-card {
+            background: linear-gradient(135deg, #5c5cff, #d400d4);
+            color: white;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #5c5cff, #d400d4);
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.75rem;
+            font-weight: 600;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(92, 92, 255, 0.4);
+        }
+
+        .input-field {
+            border: 2px solid #2a2a5e;
+            border-radius: 0.75rem;
+            padding: 0.75rem;
+            background: rgba(255, 255, 255, 0.9);
+            color: #000;
+            transition: border-color 0.3s ease;
+        }
+
+        .input-field:focus {
+            border-color: #5c5cff;
+            box-shadow: 0 0 0 3px rgba(92, 92, 255, 0.2);
+        }
+
+        .textarea-field {
+            border: 2px solid #2a2a5e;
+            border-radius: 0.75rem;
+            padding: 0.75rem;
+            background: rgba(255, 255, 255, 0.9);
+            color: #000;
+            font-family: 'Inter', sans-serif;
+            line-height: 1.6;
+        }
+
+        .sidebar {
+            background: linear-gradient(180deg, #0a0a23, #1a1a3d);
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
             padding: 1.5rem;
         }
 
-        .login-container {
-            padding: 2rem;
+        .sidebar-title {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #e0e0ff;
+            text-align: center;
+            margin-bottom: 2rem;
         }
-    }
+
+        .tag {
+            display: inline-block;
+            background: linear-gradient(135deg, #5c5cff, #d400d4);
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 1rem;
+            font-size: 0.85rem;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .media-preview {
+            max-width: 100%;
+            border-radius: 0.75rem;
+            margin: 1rem 0;
+            box-shadow: 0 4px 15px rgba(92, 92, 255, 0.3);
+        }
+
+        .comment-section {
+            background: rgba(20, 20, 50, 0.95);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+
+        .hero {
+            background: linear-gradient(135deg, rgba(92, 92, 255, 0.2), rgba(212, 0, 212, 0.2));
+            border-radius: 1rem;
+            padding: 3rem;
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        #MainMenu, footer, header {
+            visibility: hidden;
+        }
     </style>
     """, unsafe_allow_html=True)
 
-# Data storage class with enhanced security
+
+# Database Setup
+Base = declarative_base()
+
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, nullable=False)
+    password = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    profile = Column(JSON, default={})
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Blog(Base):
+    __tablename__ = 'blogs'
+    id = Column(String, primary_key=True)
+    username = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    tags = Column(JSON, default=[])
+    media = Column(JSON, default=[])
+    font = Column(String, default='Inter')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    views = Column(Integer, default=0)
+    public_link = Column(String)
+
+
+class CaseStudy(Base):
+    __tablename__ = 'case_studies'
+    id = Column(String, primary_key=True)
+    username = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    problem = Column(Text, nullable=False)
+    solution = Column(Text, nullable=False)
+    results = Column(Text, nullable=False)
+    tags = Column(JSON, default=[])
+    media = Column(JSON, default=[])
+    font = Column(String, default='Inter')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    views = Column(Integer, default=0)
+    public_link = Column(String)
+
+
+class Media(Base):
+    __tablename__ = 'media'
+    id = Column(String, primary_key=True)
+    username = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    filename = Column(String, nullable=False)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Comment(Base):
+    __tablename__ = 'comments'
+    id = Column(String, primary_key=True)
+    content_type = Column(String, nullable=False)
+    content_id = Column(String, nullable=False)
+    username = Column(String, nullable=False)
+    comment = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+engine = create_engine('sqlite:///galaxywrite.db')
+Base.metadata.create_all(engine)
+Session = sessionmaker(bind=engine)
+
+# Data Manager
 
 
 class DataManager:
     def __init__(self):
-        self.users_file = "users.json"
-        self.blogs_file = "blogs.json"
-        self.case_studies_file = "case_studies.json"
-        self.media_file = "media.json"
-        self.ensure_files_exist()
-
-    def ensure_files_exist(self):
-        for file in [self.users_file, self.blogs_file, self.case_studies_file, self.media_file]:
-            if not os.path.exists(file):
-                with open(file, 'w') as f:
-                    json.dump({}, f)
-
-    def load_data(self, file_path):
-        try:
-            with open(file_path, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-
-    def save_data(self, data, file_path):
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        self.session = Session()
 
     def hash_password(self, password):
-        return hashlib.sha256(password.encode()).hexdigest()
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+    def check_password(self, password, hashed):
+        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
     def register_user(self, username, password, email):
-        users = self.load_data(self.users_file)
-        if username in users:
+        username = bleach.clean(username)
+        email = bleach.clean(email)
+        if self.session.query(User).filter_by(username=username).first():
             return False
-
-        users[username] = {
-            'password': self.hash_password(password),
-            'email': email,
-            'created_at': datetime.now().isoformat(),
-            'profile': {
+        user = User(
+            username=username,
+            password=self.hash_password(password),
+            email=email,
+            profile={
                 'bio': '',
                 'avatar': '',
                 'social_links': {},
-                'preferred_font': 'Montserrat'
+                'preferred_font': 'Inter'
             }
-        }
-        self.save_data(users, self.users_file)
+        )
+        self.session.add(user)
+        self.session.commit()
         return True
 
     def authenticate_user(self, username, password):
-        users = self.load_data(self.users_file)
-        if username in users:
-            return users[username]['password'] == self.hash_password(password)
+        user = self.session.query(User).filter_by(username=username).first()
+        if user and self.check_password(password, user.password):
+            return True
         return False
 
-    def save_blog(self, username, title, content, tags="", media=None, font='Montserrat'):
-        blogs = self.load_data(self.blogs_file)
-        if username not in blogs:
-            blogs[username] = []
-
+    def save_blog(self, username, title, content, tags="", media=None, font='Inter'):
+        title = bleach.clean(title)
+        content = bleach.clean(content)
+        tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
         blog_id = str(uuid.uuid4())
-        blog = {
-            'id': blog_id,
-            'title': title,
-            'content': content,
-            'tags': [tag.strip() for tag in tags.split(',') if tag.strip()],
-            'created_at': datetime.now().isoformat(),
-            'updated_at': datetime.now().isoformat(),
-            'views': 0,
-            'media': media or [],
-            'font': font,
-            'public_link': f"/blog/{username}/{blog_id}"
-        }
-        blogs[username].append(blog)
-        self.save_data(blogs, self.blogs_file)
+        public_link = f"{APP_URL}/blog/{urllib.parse.quote(username)}/{blog_id}"
+        blog = Blog(
+            id=blog_id,
+            username=username,
+            title=title,
+            content=content,
+            tags=tags,
+            media=media or [],
+            font=font,
+            public_link=public_link
+        )
+        self.session.add(blog)
+        self.session.commit()
         return blog_id
 
-    def save_case_study(self, username, title, problem, solution, results, tags="", media=None, font='Montserrat'):
-        case_studies = self.load_data(self.case_studies_file)
-        if username not in case_studies:
-            case_studies[username] = []
-
+    def save_case_study(self, username, title, problem, solution, results, tags="", media=None, font='Inter'):
+        title = bleach.clean(title)
+        problem = bleach.clean(problem)
+        solution = bleach.clean(solution)
+        results = bleach.clean(results)
+        tags = [bleach.clean(tag.strip()) for tag in tags.split(',') if tag.strip()]
         case_id = str(uuid.uuid4())
-        case_study = {
-            'id': case_id,
-            'title': title,
-            'problem': problem,
-            'solution': solution,
-            'results': results,
-            'tags': [tag.strip() for tag in tags.split(',') if tag.strip()],
-            'created_at': datetime.now().isoformat(),
-            'updated_at': datetime.now().isoformat(),
-            'views': 0,
-            'media': media or [],
-            'font': font,
-            'public_link': f"/case_study/{username}/{case_id}"
-        }
-        case_studies[username].append(case_study)
-        self.save_data(case_studies, self.case_studies_file)
+        public_link = f"{APP_URL}/case_study/{urllib.parse.quote(username)}/{case_id}"
+        case_study = CaseStudy(
+            id=case_id,
+            username=username,
+            title=title,
+            problem=problem,
+            solution=solution,
+            results=results,
+            tags=tags,
+            media=media or [],
+            font=font,
+            public_link=public_link
+        )
+        self.session.add(case_study)
+        self.session.commit()
         return case_id
 
     def save_media(self, username, file):
-        media = self.load_data(self.media_file)
-        if username not in media:
-            media[username] = []
-
-        file_id = str(uuid.uuid4())
         file_type = 'image' if file.type.startswith('image') else 'video' if file.type.startswith('video') else 'gif'
         file_content = base64.b64encode(file.read()).decode('utf-8')
-
-        media[username].append({
-            'id': file_id,
-            'type': file_type,
-            'content': file_content,
-            'filename': file.name,
-            'uploaded_at': datetime.now().isoformat()
-        })
-        self.save_data(media, self.media_file)
+        file_id = str(uuid.uuid4())
+        media = Media(
+            id=file_id,
+            username=username,
+            type=file_type,
+            content=file_content,
+            filename=bleach.clean(file.name)
+        )
+        self.session.add(media)
+        self.session.commit()
         return file_id
 
+    def save_comment(self, content_type, content_id, username, comment):
+        comment = bleach.clean(comment)
+        comment_id = str(uuid.uuid4())
+        comment_obj = Comment(
+            id=comment_id,
+            content_type=content_type,
+            content_id=content_id,
+            username=username,
+            comment=comment
+        )
+        self.session.add(comment_obj)
+        self.session.commit()
+        return comment_id
+
     def get_user_blogs(self, username):
-        blogs = self.load_data(self.blogs_file)
-        return blogs.get(username, [])
+        return self.session.query(Blog).filter_by(username=username).all()
 
     def get_user_case_studies(self, username):
-        case_studies = self.load_data(self.case_studies_file)
-        return case_studies.get(username, [])
+        return self.session.query(CaseStudy).filter_by(username=username).all()
 
     def get_all_public_content(self):
-        blogs = self.load_data(self.blogs_file)
-        case_studies = self.load_data(self.case_studies_file)
-
-        all_content = []
-        for username, user_blogs in blogs.items():
-            for blog in user_blogs:
-                all_content.append({
-                    'type': 'blog',
-                    'author': username,
-                    'content': blog
-                })
-
-        for username, user_cases in case_studies.items():
-            for case in user_cases:
-                all_content.append({
-                    'type': 'case_study',
-                    'author': username,
-                    'content': case
-                })
-
-        return sorted(all_content, key=lambda x: x['content']['created_at'], reverse=True)
+        blogs = self.session.query(Blog).all()
+        case_studies = self.session.query(CaseStudy).all()
+        all_content = [
+            {'type': 'blog', 'author': blog.username, 'content': blog}
+            for blog in blogs
+        ] + [
+            {'type': 'case_study', 'author': case.username, 'content': case}
+            for case in case_studies
+        ]
+        return sorted(all_content, key=lambda x: x['content'].created_at, reverse=True)
 
     def get_media(self, username, file_id):
-        media = self.load_data(self.media_file)
-        user_media = media.get(username, [])
-        for item in user_media:
-            if item['id'] == file_id:
-                return item
-        return None
+        return self.session.query(Media).filter_by(username=username, id=file_id).first()
 
-# Initialize data manager
+    def get_comments(self, content_type, content_id):
+        return self.session.query(Comment).filter_by(content_type=content_type, content_id=content_id).all()
+
+    def get_user_profile(self, username):
+        user = self.session.query(User).filter_by(username=username).first()
+        return user.profile if user else {}
 
 
 @st.cache_resource
@@ -503,7 +404,7 @@ def get_data_manager():
 
 dm = get_data_manager()
 
-# PDF Export Function
+# PDF Export
 
 
 def export_to_pdf(content_type, content):
@@ -512,486 +413,121 @@ def export_to_pdf(content_type, content):
     styles = getSampleStyleSheet()
     story = []
 
-    story.append(Paragraph(content['title'], styles['Title']))
+    story.append(Paragraph(bleach.clean(content.title), styles['Title']))
     story.append(Spacer(1, 12))
 
     if content_type == 'blog':
-        story.append(Paragraph(content['content'], styles['BodyText']))
+        story.append(Paragraph(bleach.clean(content.content), styles['BodyText']))
     else:
-        story.append(Paragraph(f"<b>Problem:</b> {content['problem']}", styles['BodyText']))
+        story.append(Paragraph(f"<b>Problem:</b> {bleach.clean(content.problem)}", styles['BodyText']))
         story.append(Spacer(1, 12))
-        story.append(Paragraph(f"<b>Solution:</b> {content['solution']}", styles['BodyText']))
+        story.append(Paragraph(f"<b>Solution:</b> {bleach.clean(content.solution)}", styles['BodyText']))
         story.append(Spacer(1, 12))
-        story.append(Paragraph(f"<b>Results:</b> {content['results']}", styles['BodyText']))
+        story.append(Paragraph(f"<b>Results:</b> {bleach.clean(content.results)}", styles['BodyText']))
 
     doc.build(story)
     return buffer.getvalue()
 
-# Authentication functions
+# Authentication
 
 
 def login_page():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">🌌 GalaxyWrite</h1></div>', unsafe_allow_html=True)
-    st.markdown('<div class="login-container">', unsafe_allow_html=True)
-    st.markdown('<h2 class="login-header">Welcome to GalaxyWrite</h2>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="header">
+        <h1>🌌 GalaxyWrite</h1>
+    </div>
+    <div class="container">
+        <div class="card max-w-md mx-auto">
+            <h2 class="text-2xl font-bold text-center mb-6">Welcome to GalaxyWrite</h2>
+    """, unsafe_allow_html=True)
 
-    tab1, tab2 = st.tabs(["Login", "Sign Up"])
+    credentials = {
+        'usernames': {
+            user.username: {
+                'name': user.username,
+                'password': user.password,
+                'email': user.email
+            }
+            for user in dm.session.query(User).all()
+        }
+    }
+    authenticator = stauth.Authenticate(
+        credentials,
+        cookie_name="galaxywrite",
+        key="abcdef",
+        cookie_expiry_days=30
+    )
 
-    with tab1:
-        st.subheader("Login to your account")
-        username = st.text_input("Username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
+    name, authentication_status, username = authenticator.login('Login', 'main')
 
-        if st.button("Login", key="login_btn"):
-            if dm.authenticate_user(username, password):
-                st.session_state.authenticated = True
-                st.session_state.username = username
-                st.success("Login successful!")
-                st.rerun()
-            else:
-                st.error("Invalid credentials!")
+    if authentication_status:
+        st.session_state.authenticated = True
+        st.session_state.username = username
+        st.success("Login successful!")
+        st.rerun()
+    elif authentication_status == False:
+        st.error("Invalid credentials!")
+    elif authentication_status == None:
+        st.warning("Please enter your username and password")
 
-    with tab2:
-        st.subheader("Create new account")
-        new_username = st.text_input("Username", key="signup_username")
-        new_email = st.text_input("Email", key="signup_email")
-        new_password = st.text_input("Password", type="password", key="signup_password")
+    with st.expander("Create an Account", expanded=False):
+        new_username = st.text_input("Username", key="signup_username", placeholder="Choose a unique username")
+        new_email = st.text_input("Email", key="signup_email", placeholder="your.email@example.com")
+        new_password = st.text_input("Password", type="password", key="signup_password",
+                                     placeholder="At least 8 characters")
         confirm_password = st.text_input("Confirm Password", type="password", key="confirm_password")
 
-        if st.button("Sign Up", key="signup_btn"):
+        if st.button("Sign Up", key="signup_btn", type="primary"):
             if not new_username or not new_email or not new_password:
                 st.error("Please fill all fields!")
             elif new_password != confirm_password:
                 st.error("Passwords don't match!")
             elif len(new_password) < 8:
                 st.error("Password must be at least 8 characters!")
-            elif not re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', new_email):
+            elif not new_email or '@' not in new_email:
                 st.error("Invalid email format!")
             elif dm.register_user(new_username, new_password, new_email):
                 st.success("Account created successfully! Please login.")
+                credentials['usernames'][new_username] = {
+                    'name': new_username,
+                    'password': dm.hash_password(new_password),
+                    'email': new_email
+                }
             else:
                 st.error("Username already exists!")
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+# Main Page
 
 
-def dashboard():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">🌌 GalaxyWrite Dashboard</h1></div>', unsafe_allow_html=True)
-
-    user_blogs = dm.get_user_blogs(st.session_state.username)
-    user_case_studies = dm.get_user_case_studies(st.session_state.username)
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.markdown(f'''
-        <div class="stat-card">
-            <div class="stat-number">{len(user_blogs)}</div>
-            <div class="stat-label">Blog Posts</div>
+def main_page():
+    st.markdown("""
+    <div class="header">
+        <h1>🌌 GalaxyWrite Community</h1>
+    </div>
+    <div class="container">
+        <div class="hero">
+            <h2 class="text-3xl font-bold mb-4">Connect Through Cosmic Insights</h2>
+            <p class="text-lg text-gray-300 mb-6">
+                Discover a universe of blogs and case studies shared by our vibrant community. 
+                Share your story, comment, and connect with creators worldwide.
+            </p>
+            <a href="?page=Write Blog" class="btn-primary">Start Writing</a>
         </div>
-        ''', unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
-    with col2:
-        st.markdown(f'''
-        <div class="stat-card">
-            <div class="stat-number">{len(user_case_studies)}</div>
-            <div class="stat-label">Case Studies</div>
-        </div>
-        ''', unsafe_allow_html=True)
-
-    with col3:
-        total_views = sum(blog.get('views', 0) for blog in user_blogs) + \
-            sum(case.get('views', 0) for case in user_case_studies)
-        st.markdown(f'''
-        <div class="stat-card">
-            <div class="stat-number">{total_views}</div>
-            <div class="stat-label">Total Views</div>
-        </div>
-        ''', unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    st.subheader("Your Recent Content")
-
-    recent_blogs = sorted(user_blogs, key=lambda x: x['created_at'], reverse=True)[:3]
-    recent_cases = sorted(user_case_studies, key=lambda x: x['created_at'], reverse=True)[:3]
-
-    if recent_blogs:
-        st.write("**Recent Blogs:**")
-        for blog in recent_blogs:
-            st.markdown(f'''
-            <div class="blog-card" style="font-family: {blog.get('font', 'Montserrat')};">
-                <div class="blog-title">{blog['title']}</div>
-                <div class="blog-meta">Created: {blog['created_at'][:10]} | Views: {blog.get('views', 0)}</div>
-                <div class="blog-content">{blog['content'][:200]}...</div>
-            </div>
-            ''', unsafe_allow_html=True)
-
-    if recent_cases:
-        st.write("**Recent Case Studies:**")
-        for case in recent_cases:
-            st.markdown(f'''
-            <div class="case-study-card" style="font-family: {case.get('font', 'Montserrat')};">
-                <div class="blog-title">{case['title']}</div>
-                <div class="blog-meta">Created: {case['created_at'][:10]} | Views: {case.get('views', 0)}</div>
-                <div class="blog-content">{case['problem'][:200]}...</div>
-            </div>
-            ''', unsafe_allow_html=True)
-
-
-def blog_editor():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">✍️ Blog Editor</h1></div>', unsafe_allow_html=True)
-    st.markdown('<div class="editor-container">', unsafe_allow_html=True)
-
-    title = st.text_input("Blog Title", value=st.session_state.get(
-        'template_title', ''), placeholder="Enter an engaging title...")
-
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2, col3 = st.columns([2, 1, 2])
     with col1:
-        tags = st.text_input("Tags (comma-separated)", placeholder="space, tech, science")
+        content_filter = st.selectbox("Content Type", ["All", "Blogs", "Case Studies"], key="content_filter")
     with col2:
-        font = st.selectbox("Font", [
-            'Montserrat', 'Playfair Display', 'Arial', 'Times New Roman', 'Courier New',
-            'Roboto', 'Open Sans', 'Lora', 'Poppins'
-        ])
+        sort_by = st.selectbox("Sort By", ["Recent", "Most Viewed"], key="sort_by")
     with col3:
-        publish_date = st.date_input("Publish Date", datetime.now().date())
-
-    st.subheader("Media Upload")
-    uploaded_file = st.file_uploader("Upload Image, GIF, or Video", type=[
-                                     'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="blog_media")
-    media_ids = []
-    if uploaded_file:
-        media_id = dm.save_media(st.session_state.username, uploaded_file)
-        media_ids.append(media_id)
-        media = dm.get_media(st.session_state.username, media_id)
-        if media['type'] == 'image':
-            st.image(f"data:image/png;base64,{media['content']}", caption=media['filename'], use_column_width=True)
-        elif media['type'] == 'gif':
-            st.image(f"data:image/gif;base64,{media['content']}", caption=media['filename'], use_column_width=True)
-        else:
-            st.video(f"data:video/mp4;base64,{media['content']}")
-
-    st.subheader("Formatting Tools")
-    format_col1, format_col2, format_col3, format_col4, format_col5, format_col6, format_col7, format_col8 = st.columns(
-        8)
-    with format_col1:
-        if st.button("**Bold**"):
-            st.info("Bold formatting applied! Use **text** in the content area.")
-    with format_col2:
-        if st.button("*Italic*"):
-            st.info("Italic formatting applied! Use *text* in the content area.")
-    with format_col3:
-        if st.button("# Header"):
-            st.info("Header formatting applied! Use #, ##, or ### for headers.")
-    with format_col4:
-        if st.button("🔗 Link"):
-            st.info("Link formatting applied! Use [text](url) in the content area.")
-    with format_col5:
-        if st.button("📷 Media"):
-            st.info("Media placeholder added! Use ![media](media_id) in the content area.")
-    with format_col6:
-        if st.button("📋 List"):
-            st.info("List formatting applied! Use - or * for bullet points, 1. for numbered lists.")
-    with format_col7:
-        if st.button("💬 Quote"):
-            st.info("Quote formatting applied! Use > text for blockquotes.")
-    with format_col8:
-        if st.button("📑 Code"):
-            st.info("Code formatting applied! Use ```language\ncode\n``` for code blocks.")
-
-    st.subheader("Content")
-    content = st.text_area(
-        "Write your blog content here...",
-        value=st.session_state.get('template_content', ''),
-        height=400,
-        placeholder="Start writing your stellar blog post...\n\nYou can use Markdown formatting:\n- **bold** for bold text\n- *italic* for italic text\n- #, ##, ### for headers\n- [link](url) for links\n- ![media](media_id) for embedded media\n- - or * for bullet lists\n- 1. for numbered lists\n- > for blockquotes\n- ```language\ncode\n``` for code blocks"
-    )
-
-    if content:
-        st.subheader("Preview")
-        rendered_content = content
-        for media_id in media_ids:
-            media = dm.get_media(st.session_state.username, media_id)
-            if media:
-                if media['type'] in ['image', 'gif']:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})", f'<img src="data:image/{media["type"]};base64,{media["content"]}" class="media-preview">')
-                else:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media["content"]}" class="media-preview" controls></video>')
-        st.markdown(rendered_content, unsafe_allow_html=True)
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("💾 Save Draft", key="save_draft"):
-            if title and content:
-                blog_id = dm.save_blog(st.session_state.username, title, content, tags, media_ids, font)
-                st.success(f"Blog saved successfully! ID: {blog_id}")
-            else:
-                st.error("Please fill in title and content!")
-
-    with col2:
-        if st.button("🚀 Publish", key="publish_blog"):
-            if title and content:
-                blog_id = dm.save_blog(st.session_state.username, title, content, tags, media_ids, font)
-                public_url = f"https://galaxywrite.app{urllib.parse.quote(dm.get_user_blogs(st.session_state.username)[-1]['public_link'])}"
-                st.success(f"Blog published successfully! ID: {blog_id}")
-                st.markdown(f"[Share your blog]({public_url})")
-                st.balloons()
-            else:
-                st.error("Please fill in title and content!")
-
-    with col3:
-        if st.button("📄 Export PDF", key="export_pdf"):
-            if title and content:
-                blog = {'title': title, 'content': content}
-                pdf_data = export_to_pdf('blog', blog)
-                st.download_button(
-                    "Download PDF",
-                    pdf_data,
-                    file_name=f"{title}.pdf",
-                    mime="application/pdf"
-                )
-            else:
-                st.error("Please fill in title and content!")
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def case_study_editor():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">🔬 Case Study Editor</h1></div>', unsafe_allow_html=True)
-    st.markdown('<div class="editor-container">', unsafe_allow_html=True)
-
-    title = st.text_input("Case Study Title", value=st.session_state.get(
-        'case_template_title', ''), placeholder="Enter case study title...")
-
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        tags = st.text_input("Tags (comma-separated)", placeholder="business, strategy, analysis")
-    with col2:
-        font = st.selectbox("Font", [
-            'Montserrat', 'Playfair Display', 'Arial', 'Times New Roman', 'Courier New',
-            'Roboto', 'Open Sans', 'Lora', 'Poppins'
-        ])
-
-    st.subheader("Media Upload")
-    uploaded_file = st.file_uploader("Upload Image, GIF, or Video", type=[
-                                     'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="case_media")
-    media_ids = []
-    if uploaded_file:
-        media_id = dm.save_media(st.session_state.username, uploaded_file)
-        media_ids.append(media_id)
-        media = dm.get_media(st.session_state.username, media_id)
-        if media['type'] == 'image':
-            st.image(f"data:image/png;base64,{media['content']}", caption=media['filename'], use_column_width=True)
-        elif media['type'] == 'gif':
-            st.image(f"data:image/gif;base64,{media['content']}", caption=media['filename'], use_column_width=True)
-        else:
-            st.video(f"data:video/mp4;base64,{media['content']}")
-
-    st.subheader("Formatting Tools")
-    format_col1, format_col2, format_col3, format_col4, format_col5, format_col6, format_col7, format_col8 = st.columns(
-        8)
-    with format_col1:
-        if st.button("**Bold**"):
-            st.info("Bold formatting applied! Use **text** in the content area.")
-    with format_col2:
-        if st.button("*Italic*"):
-            st.info("Italic formatting applied! Use *text* in the content area.")
-    with format_col3:
-        if st.button("# Header"):
-            st.info("Header formatting applied! Use #, ##, or ### for headers.")
-    with format_col4:
-        if st.button("🔗 Link"):
-            st.info("Link formatting applied! Use [text](url) in the content area.")
-    with format_col5:
-        if st.button("📷 Media"):
-            st.info("Media placeholder added! Use ![media](media_id) in the content area.")
-    with format_col6:
-        if st.button("📋 List"):
-            st.info("List formatting applied! Use - or * for bullet points, 1. for numbered lists.")
-    with format_col7:
-        if st.button("💬 Quote"):
-            st.info("Quote formatting applied! Use > text for blockquotes.")
-    with format_col8:
-        if st.button("📑 Code"):
-            st.info("Code formatting applied! Use ```language\ncode\n``` for code blocks.")
-
-    st.subheader("Problem Statement")
-    problem = st.text_area(
-        "Describe the problem or challenge",
-        value=st.session_state.get('case_template_problem', ''),
-        height=150,
-        placeholder="What problem were you trying to solve? Provide context and background...\n\nUse Markdown formatting:\n- **bold** for bold text\n- *italic* for italic text\n- #, ##, ### for headers\n- [link](url) for links\n- ![media](media_id) for embedded media\n- - or * for bullet lists\n- 1. for numbered lists\n- > for blockquotes\n- ```language\ncode\n``` for code blocks"
-    )
-
-    st.subheader("Solution Approach")
-    solution = st.text_area(
-        "Explain your solution methodology",
-        value=st.session_state.get('case_template_solution', ''),
-        height=200,
-        placeholder="How did you approach the problem? What methods, tools, or strategies did you use?\n\nUse Markdown formatting:\n- **bold** for bold text\n- *italic* for italic text\n- #, ##, ### for headers\n- [link](url) for links\n- ![media](media_id) for embedded media\n- - or * for bullet lists\n- 1. for numbered lists\n- > for blockquotes\n- ```language\ncode\n``` for code blocks"
-    )
-
-    st.subheader("Results & Outcomes")
-    results = st.text_area(
-        "Share the results and impact",
-        value=st.session_state.get('case_template_results', ''),
-        height=150,
-        placeholder="What were the outcomes? Include metrics, feedback, and lessons learned...\n\nUse Markdown formatting:\n- **bold** for bold text\n- *italic* for italic text\n- #, ##, ### for headers\n- [link](url) for links\n- ![media](media_id) for embedded media\n- - or * for bullet lists\n- 1. for numbered lists\n- > for blockquotes\n- ```language\ncode\n``` for code blocks"
-    )
-
-    if problem or solution or results:
-        st.subheader("Preview")
-        rendered_content = ""
-        if problem:
-            rendered_content += f"**Problem:** {problem}\n\n"
-        if solution:
-            rendered_content += f"**Solution:** {solution}\n\n"
-        if results:
-            rendered_content += f"**Results:** {results}\n\n"
-
-        for media_id in media_ids:
-            media = dm.get_media(st.session_state.username, media_id)
-            if media:
-                if media['type'] in ['image', 'gif']:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})", f'<img src="data:image/{media["type"]};base64,{media["content"]}" class="media-preview">')
-                else:
-                    rendered_content = rendered_content.replace(
-                        f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media["content"]}" class="media-preview" controls></video>')
-
-        st.markdown(rendered_content, unsafe_allow_html=True)
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("💾 Save Draft", key="save_case_draft"):
-            if title and problem and solution:
-                case_id = dm.save_case_study(st.session_state.username, title, problem,
-                                             solution, results, tags, media_ids, font)
-                st.success(f"Case study saved successfully! ID: {case_id}")
-            else:
-                st.error("Please fill in title, problem, and solution!")
-
-    with col2:
-        if st.button("🚀 Publish", key="publish_case"):
-            if title and problem and solution:
-                case_id = dm.save_case_study(st.session_state.username, title, problem,
-                                             solution, results, tags, media_ids, font)
-                public_url = f"https://galaxywrite.app{urllib.parse.quote(dm.get_user_case_studies(st.session_state.username)[-1]['public_link'])}"
-                st.success(f"Case study published successfully! ID: {case_id}")
-                st.markdown(f"[Share your case study]({public_url})")
-                st.balloons()
-            else:
-                st.error("Please fill in title, problem, and solution!")
-
-    with col3:
-        if st.button("📄 Export PDF", key="export_case_pdf"):
-            if title and problem and solution:
-                case = {'title': title, 'problem': problem, 'solution': solution, 'results': results}
-                pdf_data = export_to_pdf('case_study', case)
-                st.download_button(
-                    "Download PDF",
-                    pdf_data,
-                    file_name=f"{title}.pdf",
-                    mime="application/pdf"
-                )
-            else:
-                st.error("Please fill in title, problem, and solution!")
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def my_content():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">📚 My Content</h1></div>', unsafe_allow_html=True)
-
-    tab1, tab2 = st.tabs(["My Blogs", "My Case Studies"])
-
-    with tab1:
-        blogs = dm.get_user_blogs(st.session_state.username)
-        if blogs:
-            for blog in reversed(blogs):
-                with st.expander(f"📝 {blog['title']} (ID: {blog['id']})"):
-                    st.markdown(f"**Created:** {blog['created_at'][:19]}")
-                    st.markdown(f"**Tags:** {', '.join(blog.get('tags', []))}")
-                    st.markdown(f"**Views:** {blog.get('views', 0)}")
-                    st.markdown(f"**Font:** {blog.get('font', 'Montserrat')}")
-                    st.markdown(f"[Public Link](https://galaxywrite.app{urllib.parse.quote(blog['public_link'])})")
-                    st.markdown("---")
-                    rendered_content = blog['content']
-                    for media_id in blog.get('media', []):
-                        media = dm.get_media(st.session_state.username, media_id)
-                        if media:
-                            if media['type'] in ['image', 'gif']:
-                                rendered_content = rendered_content.replace(
-                                    f"![media]({media_id})", f'<img src="data:image/{media["type"]};base64,{media["content"]}" class="media-preview">')
-                            else:
-                                rendered_content = rendered_content.replace(
-                                    f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media["content"]}" class="media-preview" controls></video>')
-                    st.markdown(rendered_content, unsafe_allow_html=True)
-                    if st.button("📄 Export PDF", key=f"export_blog_{blog['id']}"):
-                        pdf_data = export_to_pdf('blog', blog)
-                        st.download_button(
-                            "Download PDF",
-                            pdf_data,
-                            file_name=f"{blog['title']}.pdf",
-                            mime="application/pdf"
-                        )
-        else:
-            st.info("No blogs yet. Create your first blog post!")
-
-    with tab2:
-        case_studies = dm.get_user_case_studies(st.session_state.username)
-        if case_studies:
-            for case in reversed(case_studies):
-                with st.expander(f"🔬 {case['title']} (ID: {case['id']})"):
-                    st.markdown(f"**Created:** {case['created_at'][:19]}")
-                    st.markdown(f"**Tags:** {', '.join(case.get('tags', []))}")
-                    st.markdown(f"**Views:** {case.get('views', 0)}")
-                    st.markdown(f"**Font:** {case.get('font', 'Montserrat')}")
-                    st.markdown(f"[Public Link](https://galaxywrite.app{urllib.parse.quote(case['public_link'])})")
-                    st.markdown("---")
-                    rendered_content = f"**Problem:** {case['problem']}\n\n**Solution:** {case['solution']}\n\n**Results:** {case['results']}"
-                    for media_id in case.get('media', []):
-                        media = dm.get_media(st.session_state.username, media_id)
-                        if media:
-                            if media['type'] in ['image', 'gif']:
-                                rendered_content = rendered_content.replace(
-                                    f"![media]({media_id})", f'<img src="data:image/{media["type"]};base64,{media["content"]}" class="media-preview">')
-                            else:
-                                rendered_content = rendered_content.replace(
-                                    f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media["content"]}" class="media-preview" controls></video>')
-                    st.markdown(rendered_content, unsafe_allow_html=True)
-                    if st.button("📄 Export PDF", key=f"export_case_{case['id']}"):
-                        pdf_data = export_to_pdf('case_study', case)
-                        st.download_button(
-                            "Download PDF",
-                            pdf_data,
-                            file_name=f"{case['title']}.pdf",
-                            mime="application/pdf"
-                        )
-        else:
-            st.info("No case studies yet. Create your first case study!")
-
-
-def public_view():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">🌠 Explore the Galaxy of Content</h1></div>',
-                unsafe_allow_html=True)
+        search_term = st.text_input("Search", placeholder="Search titles, content...", key="search_main")
 
     all_content = dm.get_all_public_content()
-
-    if not all_content:
-        st.info("No public content available yet. Be the first to share your cosmic insights!")
-        return
-
-    col1, col2 = st.columns(2)
-    with col1:
-        content_filter = st.selectbox("Filter by type", ["All", "Blogs", "Case Studies"])
-    with col2:
-        search_term = st.text_input("Search content", placeholder="Search titles, content...")
-
     filtered_content = all_content
+
     if content_filter == "Blogs":
         filtered_content = [c for c in all_content if c['type'] == 'blog']
     elif content_filter == "Case Studies":
@@ -1000,212 +536,610 @@ def public_view():
     if search_term:
         filtered_content = [
             c for c in filtered_content
-            if search_term.lower() in c['content']['title'].lower() or
-            search_term.lower() in str(c['content']).lower()
+            if search_term.lower() in c['content'].title.lower() or
+            search_term.lower() in (
+                c['content'].content if c['type'] == 'blog'
+                else f"{c['content'].problem} {c['content'].solution} {c['content'].results}"
+            ).lower()
         ]
 
-    st.markdown(f"**Showing {len(filtered_content)} cosmic creations**")
+    if sort_by == "Most Viewed":
+        filtered_content = sorted(filtered_content, key=lambda x: x['content'].views, reverse=True)
+
+    st.markdown(
+        f'<p class="text-lg font-semibold">{len(filtered_content)} Cosmic Creations</p>', unsafe_allow_html=True)
 
     for item in filtered_content:
-        if item['type'] == 'blog':
-            rendered_content = item['content']['content'][:300]
-            for media_id in item['content'].get('media', []):
-                media = dm.get_media(item['author'], media_id)
-                if media:
-                    if media['type'] in ['image', 'gif']:
-                        rendered_content = rendered_content.replace(
-                            f"![media]({media_id})", f'<img src="data:image/{media["type"]};base64,{media["content"]}" class="media-preview">')
+        content = item['content']
+        rendered_content = content.content[:300] if item['type'] == 'blog' else content.problem[:300]
+        for media_id in content.media:
+            media = dm.get_media(item['author'], media_id)
+            if media:
+                if media.type in ['image', 'gif']:
+                    rendered_content = rendered_content.replace(
+                        f"![media]({media_id})",
+                        f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">'
+                    )
+                else:
+                    rendered_content = rendered_content.replace(
+                        f"![media]({media_id})",
+                        f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>'
+                    )
+        card_class = "card" if item['type'] == 'blog' else "card case-card"
+        st.markdown(f'''
+        <div class="{card_class}">
+            <h3 class="text-xl font-semibold">{'📝' if item['type'] == 'blog' else '🔬'} {content.title}</h3>
+            <p class="text-sm text-gray-400">
+                By <a href="{APP_URL}/?page=profile&username={urllib.parse.quote(item['author'])}" class="text-blue-300 hover:underline">{item['author']}</a> | 
+                {content.created_at.strftime('%Y-%m-%d')} | Views: {content.views}
+            </p>
+            <p class="text-gray-200 mt-2">{rendered_content}...</p>
+            <div class="mt-2">
+                {' '.join([f'<span class="tag">{tag}</span>' for tag in content.tags])}
+            </div>
+            <a href="{content.public_link}" class="text-blue-300 hover:underline mt-2 inline-block">Read More</a>
+        </div>
+        ''', unsafe_allow_html=True)
+
+        with st.expander("Comments"):
+            comments = dm.get_comments(item['type'], content.id)
+            for comment in comments:
+                st.markdown(f'''
+                <div class="comment-section">
+                    <p><strong>{comment.username}</strong> ({comment.created_at.strftime('%Y-%m-%d %H:%M')}): {comment.comment}</p>
+                </div>
+                ''', unsafe_allow_html=True)
+
+            if st.session_state.get('authenticated', False):
+                comment_text = st.text_area(
+                    f"Add a comment to {content.title}",
+                    key=f"comment_{item['type']}_{content.id}",
+                    placeholder="Share your thoughts..."
+                )
+                if st.button("Post Comment", key=f"post_comment_{item['type']}_{content.id}", type="primary"):
+                    if comment_text:
+                        dm.save_comment(item['type'], content.id, st.session_state.username, comment_text)
+                        st.success("Comment posted!")
+                        st.rerun()
                     else:
-                        rendered_content = rendered_content.replace(
-                            f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media["content"]}" class="media-preview" controls></video>')
+                        st.error("Comment cannot be empty!")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# Dashboard
+
+
+def dashboard():
+    st.markdown("""
+    <div class="header">
+        <h1>🌌 GalaxyWrite Dashboard</h1>
+    </div>
+    <div class="container">
+    """, unsafe_allow_html=True)
+
+    user_blogs = dm.get_user_blogs(st.session_state.username)
+    user_case_studies = dm.get_user_case_studies(st.session_state.username)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(f'''
+        <div class="card text-center">
+            <h3 class="text-2xl font-bold text-blue-400">{len(user_blogs)}</h3>
+            <p class="text-gray-400">Blog Posts</p>
+        </div>
+        ''', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'''
+        <div class="card text-center">
+            <h3 class="text-2xl font-bold text-blue-400">{len(user_case_studies)}</h3>
+            <p class="text-gray-400">Case Studies</p>
+        </div>
+        ''', unsafe_allow_html=True)
+    with col3:
+        total_views = sum(blog.views for blog in user_blogs) + sum(case.views for case in user_case_studies)
+        st.markdown(f'''
+        <div class="card text-center">
+            <h3 class="text-2xl font-bold text-blue-400">{total_views}</h3>
+            <p class="text-gray-400">Total Views</p>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    st.markdown('<h2 class="text-xl font-semibold mt-8">Your Recent Content</h2>', unsafe_allow_html=True)
+    recent_blogs = sorted(user_blogs, key=lambda x: x.created_at, reverse=True)[:3]
+    recent_cases = sorted(user_case_studies, key=lambda x: x.created_at, reverse=True)[:3]
+
+    if recent_blogs:
+        st.markdown('<p class="text-lg font-medium">Recent Blogs</p>', unsafe_allow_html=True)
+        for blog in recent_blogs:
             st.markdown(f'''
-            <div class="blog-card" style="font-family: {item['content'].get('font', 'Montserrat')};">
-                <div class="blog-title">📝 {item['content']['title']}</div>
-                <div class="blog-meta">
-                    By {item['author']} | {item['content']['created_at'][:10]} | 
-                    Views: {item['content'].get('views', 0)}
-                </div>
-                <div class="blog-content">{rendered_content}...</div>
-                <div>
-                    {' '.join([f'<span class="tag">{tag}</span>' for tag in item['content'].get('tags', [])])}
-                </div>
-                <a href="https://galaxywrite.app{urllib.parse.quote(item['content']['public_link'])}" target="_blank">Read More</a>
+            <div class="card">
+                <h3 class="text-lg font-semibold">{blog.title}</h3>
+                <p class="text-sm text-gray-400">Created: {blog.created_at.strftime('%Y-%m-%d')} | Views: {blog.views}</p>
+                <p class="text-gray-200">{blog.content[:200]}...</p>
             </div>
             ''', unsafe_allow_html=True)
+
+    if recent_cases:
+        st.markdown('<p class="text-lg font-medium">Recent Case Studies</p>', unsafe_allow_html=True)
+        for case in recent_cases:
+            st.markdown(f'''
+            <div class="card case-card">
+                <h3 class="text-lg font-semibold">{case.title}</h3>
+                <p class="text-sm text-gray-200">Created: {case.created_at.strftime('%Y-%m-%d')} | Views: {case.views}</p>
+                <p class="text-gray-100">{case.problem[:200]}...</p>
+            </div>
+            ''', unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# Blog Editor
+
+
+def blog_editor():
+    st.markdown("""
+    <div class="header">
+        <h1>✍️ Blog Editor</h1>
+    </div>
+    <div class="container">
+        <div class="card">
+    """, unsafe_allow_html=True)
+
+    title = st.text_input("Blog Title", value=st.session_state.get('template_title', ''),
+                          placeholder="Enter an engaging title...", key="blog_title")
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        tags = st.text_input("Tags (comma-separated)", placeholder="space, tech, science", key="blog_tags")
+    with col2:
+        font = st.selectbox("Font", [
+            'Inter', 'Playfair Display', 'Arial', 'Times New Roman', 'Courier New',
+            'Roboto', 'Open Sans', 'Lora', 'Poppins'
+        ], key="blog_font")
+    with col3:
+        publish_date = st.date_input("Publish Date", datetime.now().date(), key="blog_date")
+
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Media Upload</h3>', unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("Upload Image, GIF, or Video", type=[
+                                     'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="blog_media")
+    media_ids = []
+    if uploaded_file:
+        media_id = dm.save_media(st.session_state.username, uploaded_file)
+        media_ids.append(media_id)
+        media = dm.get_media(st.session_state.username, media_id)
+        if media.type == 'image':
+            st.image(f"data:image/png;base64,{media.content}", caption=media.filename, use_column_width=True)
+        elif media.type == 'gif':
+            st.image(f"data:image/gif;base64,{media.content}", caption=media.filename, use_column_width=True)
         else:
-            rendered_content = f"**Problem:** {item['content']['problem'][:200]}"
-            for media_id in item['content'].get('media', []):
-                media = dm.get_media(item['author'], media_id)
-                if media:
-                    if media['type'] in ['image', 'gif']:
-                        rendered_content = rendered_content.replace(
-                            f"![media]({media_id})", f'<img src="data:image/{media["type"]};base64,{media["content"]}" class="media-preview">')
-                    else:
-                        rendered_content = rendered_content.replace(
-                            f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media["content"]}" class="media-preview" controls></video>')
-            st.markdown(f'''
-            <div class="case-study-card" style="font-family: {item['content'].get('font', 'Montserrat')};">
-                <div class="blog-title">🔬 {item['content']['title']}</div>
-                <div class="blog-meta">
-                    By {item['author']} | {item['content']['created_at'][:10]} | 
-                    Views: {item['content'].get('views', 0)}
-                </div>
-                <div class="blog-content">{rendered_content}...</div>
-                <div>
-                    {' '.join([f'<span class="tag">{tag}</span>' for tag in item['content'].get('tags', [])])}
-                </div>
-                <a href="https://galaxywrite.app{urllib.parse.quote(item['content']['public_link'])}" target="_blank">Read More</a>
-            </div>
-            ''', unsafe_allow_html=True)
+            st.video(f"data:video/mp4;base64,{media.content}")
+
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Formatting Tools</h3>', unsafe_allow_html=True)
+    cols = st.columns(8)
+    formatting = [
+        ("**Bold**", "Use **text** for bold"),
+        ("*Italic*", "Use *text* for italic"),
+        ("# Header", "Use #, ##, ### for headers"),
+        ("🔗 Link", "Use [text](url) for links"),
+        ("📷 Media", "Use ![media](media_id) for media"),
+        ("📋 List", "Use - or * for bullets, 1. for numbered"),
+        ("💬 Quote", "Use > text for quotes"),
+        ("📑 Code", "Use ```language\ncode\n``` for code")
+    ]
+    for i, (label, info) in enumerate(formatting):
+        with cols[i]:
+            if st.button(label, key=f"format_{i}"):
+                st.info(info)
+
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Content</h3>', unsafe_allow_html=True)
+    content = st.text_area(
+        "Write your blog content here...",
+        value=st.session_state.get('template_content', ''),
+        height=400,
+        placeholder="Start writing your stellar blog post...\n\nUse Markdown formatting:\n- **bold** for bold text\n- *italic* for italic text\n- #, ##, ### for headers\n- [link](url) for links\n- ![media](media_id) for embedded media\n- - or * for bullet lists\n- 1. for numbered lists\n- > for blockquotes\n- ```language\ncode\n``` for code blocks",
+        key="blog_content"
+    )
+
+    if content:
+        st.markdown('<h3 class="text-lg font-semibold mt-6">Preview</h3>', unsafe_allow_html=True)
+        rendered_content = content
+        for media_id in media_ids:
+            media = dm.get_media(st.session_state.username, media_id)
+            if media:
+                if media.type in ['image', 'gif']:
+                    rendered_content = rendered_content.replace(
+                        f"![media]({media_id})", f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">')
+                else:
+                    rendered_content = rendered_content.replace(
+                        f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>')
+        st.markdown(rendered_content, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("💾 Save Draft", key="save_draft", type="primary"):
+            if title and content:
+                blog_id = dm.save_blog(st.session_state.username, title, content, tags, media_ids, font)
+                st.success(f"Blog saved successfully! ID: {blog_id}")
+            else:
+                st.error("Please fill in title and content!")
+    with col2:
+        if st.button("🚀 Publish", key="publish_blog", type="primary"):
+            if title and content:
+                blog_id = dm.save_blog(st.session_state.username, title, content, tags, media_ids, font)
+                blog = dm.session.query(Blog).filter_by(id=blog_id).first()
+                st.success(f"Blog published successfully! ID: {blog_id}")
+                st.markdown(
+                    f'<a href="{blog.public_link}" class="text-blue-300 hover:underline">Share your blog</a>', unsafe_allow_html=True)
+                st.balloons()
+            else:
+                st.error("Please fill in title and content!")
+    with col3:
+        if st.button("📄 Export PDF", key="export_pdf", type="primary"):
+            if title and content:
+                blog = Blog(title=title, content=content)
+                pdf_data = export_to_pdf('blog', blog)
+                st.download_button(
+                    "Download PDF",
+                    pdf_data,
+                    file_name=f"{title}.pdf",
+                    mime="application/pdf",
+                    type="primary"
+                )
+            else:
+                st.error("Please fill in title and content!")
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+# Case Study Editor
+
+
+def case_study_editor():
+    formatting = [
+        ("**", "Bold text"),
+        ("*", "Italic text"),
+        ("#", "Heading 1"),
+        ("##", "Heading 2"),
+        ("- ", "Bullet point"),
+        ("> ", "Blockquote"),
+        ("```", "Code block"),
+        ("---", "Horizontal line")
+    ]
+
+    st.markdown("""
+    <div class="header">
+        <h1>🔬 Case Study Editor</h1>
+    </div>
+    <div class="container">
+        <div class="card">
+    """, unsafe_allow_html=True)
+
+    title = st.text_input("Case Study Title", value=st.session_state.get(
+        'case_template_title', ''), placeholder="Enter case study title...", key="case_title")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        tags = st.text_input("Tags (comma-separated)", placeholder="business, strategy, analysis", key="case_tags")
+    with col2:
+        font = st.selectbox("Font", [
+            'Inter', 'Playfair Display', 'Arial', 'Times New Roman', 'Courier New',
+            'Roboto', 'Open Sans', 'Lora', 'Poppins'
+        ], key="case_font")
+
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Media Upload</h3>', unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("Upload Image, GIF, or Video", type=[
+                                     'png', 'jpg', 'jpeg', 'gif', 'mp4'], key="case_media")
+    media_ids = []
+    if uploaded_file:
+        media_id = dm.save_media(st.session_state.username, uploaded_file)
+        media_ids.append(media_id)
+        media = dm.get_media(st.session_state.username, media_id)
+        if media.type == 'image':
+            st.image(f"data:image/png;base64,{media.content}", caption=media.filename, use_column_width=True)
+        elif media.type == 'gif':
+            st.image(f"data:image/gif;base64,{media.content}", caption=media.filename, use_column_width=True)
+        else:
+            st.video(f"data:video/mp4;base64,{media.content}")
+
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Formatting Tools</h3>', unsafe_allow_html=True)
+    cols = st.columns(8)
+    for i, (label, info) in enumerate(formatting):
+        with cols[i]:
+            if st.button(label, key=f"case_format_{i}"):
+                st.info(info)
+
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Problem Statement</h3>', unsafe_allow_html=True)
+    problem = st.text_area(
+        "Describe the problem or challenge",
+        value=st.session_state.get('case_template_problem', ''),
+        height=150,
+        placeholder="What problem were you trying to solve? Provide context and background...\n\nUse Markdown formatting...",
+        key="case_problem"
+    )
+
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Solution Approach</h3>', unsafe_allow_html=True)
+    solution = st.text_area(
+        "Explain your solution methodology",
+        value=st.session_state.get('case_template_solution', ''),
+        height=200,
+        placeholder="How did you approach the problem? What methods, tools, or strategies did you use?\n\nUse Markdown formatting...",
+        key="case_solution"
+    )
+
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Results & Outcomes</h3>', unsafe_allow_html=True)
+    results = st.text_area(
+        "Share the results and impact",
+        value=st.session_state.get('case_template_results', ''),
+        height=150,
+        placeholder="What were the outcomes? Include metrics, feedback, and lessons learned...\n\nUse Markdown formatting...",
+        key="case_results"
+    )
+
+    if problem or solution or results:
+        st.markdown('<h3 class="text-lg font-semibold mt-6">Preview</h3>', unsafe_allow_html=True)
+        rendered_content = ""
+        if problem:
+            rendered_content += f"**Problem:** {problem}\n\n"
+        if solution:
+            rendered_content += f"**Solution:** {solution}\n\n"
+        if results:
+            rendered_content += f"**Results:** {results}\n\n"
+        for media_id in media_ids:
+            media = dm.get_media(st.session_state.username, media_id)
+            if media:
+                if media.type in ['image', 'gif']:
+                    rendered_content = rendered_content.replace(
+                        f"![media]({media_id})", f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">')
+                else:
+                    rendered_content = rendered_content.replace(
+                        f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>')
+        st.markdown(rendered_content, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("💾 Save Draft", key="save_case_draft", type="primary"):
+            if title and problem and solution:
+                case_id = dm.save_case_study(st.session_state.username, title, problem,
+                                             solution, results, tags, media_ids, font)
+                st.success(f"Case study saved successfully! ID: {case_id}")
+            else:
+                st.error("Please fill in title, problem, and solution!")
+    with col2:
+        if st.button("🚀 Publish", key="publish_case", type="primary"):
+            if title and problem and solution:
+                case_id = dm.save_case_study(st.session_state.username, title, problem,
+                                             solution, results, tags, media_ids, font)
+                case = dm.session.query(CaseStudy).filter_by(id=case_id).first()
+                st.success(f"Case study published successfully! ID: {case_id}")
+                st.markdown(
+                    f'<a href="{case.public_link}" class="text-blue-300 hover:underline">Share your case study</a>', unsafe_allow_html=True)
+                st.balloons()
+            else:
+                st.error("Please fill in title, problem, and solution!")
+    with col3:
+        if st.button("📄 Export PDF", key="export_case_pdf", type="primary"):
+            if title and problem and solution:
+                case = CaseStudy(title=title, problem=problem, solution=solution, results=results)
+                pdf_data = export_to_pdf('case_study', case)
+                st.download_button(
+                    "Download PDF",
+                    pdf_data,
+                    file_name=f"{title}.pdf",
+                    mime="application/pdf",
+                    type="primary"
+                )
+            else:
+                st.error("Please fill in title, problem, and solution!")
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+# My Content
+
+
+def my_content():
+    st.markdown("""
+    <div class="header">
+        <h1>📚 My Content</h1>
+    </div>
+    <div class="container">
+    """, unsafe_allow_html=True)
+
+    tab1, tab2 = st.tabs(["My Blogs", "My Case Studies"])
+    with tab1:
+        blogs = dm.get_user_blogs(st.session_state.username)
+        if blogs:
+            for blog in reversed(blogs):
+                with st.expander(f"📝 {blog.title} (ID: {blog.id})"):
+                    st.markdown(f"""
+                    <p class="text-sm text-gray-400">
+                        <strong>Created:</strong> {blog.created_at.strftime('%Y-%m-%d %H:%M')} | 
+                        <strong>Tags:</strong> {', '.join(blog.tags)} | 
+                        <strong>Views:</strong> {blog.views} | 
+                        <strong>Font:</strong> {blog.font}
+                    </p>
+                    <p><a href="{blog.public_link}" class="text-blue-300 hover:underline">Public Link</a></p>
+                    <hr class="border-gray-600">
+                    """, unsafe_allow_html=True)
+                    rendered_content = blog.content
+                    for media_id in blog.media:
+                        media = dm.get_media(st.session_state.username, media_id)
+                        if media:
+                            if media.type in ['image', 'gif']:
+                                rendered_content = rendered_content.replace(
+                                    f"![media]({media_id})", f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">')
+                            else:
+                                rendered_content = rendered_content.replace(
+                                    f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>')
+                    st.markdown(rendered_content, unsafe_allow_html=True)
+                    if st.button("📄 Export PDF", key=f"export_blog_{blog.id}", type="primary"):
+                        pdf_data = export_to_pdf('blog', blog)
+                        st.download_button(
+                            "Download PDF",
+                            pdf_data,
+                            file_name=f"{blog.title}.pdf",
+                            mime="application/pdf",
+                            type="primary"
+                        )
+        else:
+            st.info("No blogs yet. Create your first blog post!")
+
+    with tab2:
+        case_studies = dm.get_user_case_studies(st.session_state.username)
+        if case_studies:
+            for case in reversed(case_studies):
+                with st.expander(f"🔬 {case.title} (ID: {case.id})"):
+                    st.markdown(f"""
+                    <p class="text-sm text-gray-400">
+                        <strong>Created:</strong> {case.created_at.strftime('%Y-%m-%d %H:%M')} | 
+                        <strong>Tags:</strong> {', '.join(case.tags)} | 
+                        <strong>Views:</strong> {case.views} | 
+                        <strong>Font:</strong> {case.font}
+                    </p>
+                    <p><a href="{case.public_link}" class="text-blue-300 hover:underline">Public Link</a></p>
+                    <hr class="border-gray-600">
+                    """, unsafe_allow_html=True)
+                    rendered_content = f"**Problem:** {case.problem}\n\n**Solution:** {case.solution}\n\n**Results:** {case.results}"
+                    for media_id in case.media:
+                        media = dm.get_media(st.session_state.username, media_id)
+                        if media:
+                            if media.type in ['image', 'gif']:
+                                rendered_content = rendered_content.replace(
+                                    f"![media]({media_id})", f'<img src="data:image/{media.type};base64,{media.content}" class="media-preview">')
+                            else:
+                                rendered_content = rendered_content.replace(
+                                    f"![media]({media_id})", f'<video src="data:video/mp4;base64,{media.content}" class="media-preview" controls></video>')
+                    st.markdown(rendered_content, unsafe_allow_html=True)
+                    if st.button("📄 Export PDF", key=f"export_case_{case.id}", type="primary"):
+                        pdf_data = export_to_pdf('case_study', case)
+                        st.download_button(
+                            "Download PDF",
+                            pdf_data,
+                            file_name=f"{case.title}.pdf",
+                            mime="application/pdf",
+                            type="primary"
+                        )
+        else:
+            st.info("No case studies yet. Create your first case study!")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# Profile View
+
+
+def profile_view(username):
+    st.markdown(f"""
+    <div class="header">
+        <h1>👤 {username}'s Profile</h1>
+    </div>
+    <div class="container">
+        <div class="card">
+    """, unsafe_allow_html=True)
+
+    profile = dm.get_user_profile(username)
+    st.markdown(f"""
+    <h3 class="text-lg font-semibold">Bio</h3>
+    <p class="text-gray-200">{profile.get('bio', 'No bio available.')}</p>
+    """, unsafe_allow_html=True)
+    social_links = profile.get('social_links', {})
+    if social_links:
+        st.markdown('<h3 class="text-lg font-semibold mt-4">Connect</h3>', unsafe_allow_html=True)
+        for platform, link in social_links.items():
+            if link:
+                st.markdown(
+                    f'<p>- <a href="{link}" class="text-blue-300 hover:underline">{platform.capitalize()}</a></p>', unsafe_allow_html=True)
+
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Their Content</h3>', unsafe_allow_html=True)
+    blogs = dm.get_user_blogs(username)
+    case_studies = dm.get_user_case_studies(username)
+
+    if blogs:
+        st.markdown('<p class="text-md font-medium">Blogs</p>', unsafe_allow_html=True)
+        for blog in blogs:
+            st.markdown(f'<p>- {blog.title} ({blog.created_at.strftime("%Y-%m-%d")})</p>', unsafe_allow_html=True)
+
+    if case_studies:
+        st.markdown('<p class="text-md font-medium mt-4">Case Studies</p>', unsafe_allow_html=True)
+        for case in case_studies:
+            st.markdown(f'<p>- {case.title} ({case.created_at.strftime("%Y-%m-%d")})</p>', unsafe_allow_html=True)
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+# Profile Settings
 
 
 def profile_settings():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">👤 Profile Settings</h1></div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="header">
+        <h1>👤 Profile Settings</h1>
+    </div>
+    <div class="container">
+        <div class="card">
+    """, unsafe_allow_html=True)
 
-    users = dm.load_data(dm.users_file)
-    user_data = users.get(st.session_state.username, {})
-    profile = user_data.get('profile', {})
-
-    bio = st.text_area("Bio", value=profile.get('bio', ''), placeholder="Tell us about your cosmic journey...")
+    profile = dm.get_user_profile(st.session_state.username)
+    bio = st.text_area("Bio", value=profile.get('bio', ''),
+                       placeholder="Tell us about your cosmic journey...", key="profile_bio")
     preferred_font = st.selectbox("Preferred Font", [
-        'Montserrat', 'Playfair Display', 'Arial', 'Times New Roman', 'Courier New',
+        'Inter', 'Playfair Display', 'Arial', 'Times New Roman', 'Courier New',
         'Roboto', 'Open Sans', 'Lora', 'Poppins'
-    ], index=0 if profile.get('preferred_font') == 'Montserrat' else 1)
+    ], index=0 if profile.get('preferred_font') == 'Inter' else 1, key="profile_font")
 
     col1, col2 = st.columns(2)
     with col1:
-        twitter = st.text_input("Twitter", value=profile.get(
-            'social_links', {}).get('twitter', ''), placeholder="@username")
+        twitter = st.text_input("Twitter", value=profile.get('social_links', {}).get(
+            'twitter', ''), placeholder="@username", key="twitter")
     with col2:
         linkedin = st.text_input("LinkedIn", value=profile.get('social_links', {}).get(
-            'linkedin', ''), placeholder="linkedin.com/in/username")
+            'linkedin', ''), placeholder="linkedin.com/in/username", key="linkedin")
 
     github = st.text_input("GitHub", value=profile.get('social_links', {}).get(
-        'github', ''), placeholder="github.com/username")
+        'github', ''), placeholder="github.com/username", key="github")
     website = st.text_input("Website", value=profile.get('social_links', {}).get(
-        'website', ''), placeholder="https://yourwebsite.com")
+        'website', ''), placeholder="https://yourwebsite.com", key="website")
 
-    if st.button("💾 Save Profile"):
-        users[st.session_state.username]['profile'] = {
-            'bio': bio,
+    if st.button("💾 Save Profile", key="save_profile", type="primary"):
+        user = dm.session.query(User).filter_by(username=st.session_state.username).first()
+        user.profile = {
+            'bio': bleach.clean(bio),
             'social_links': {
-                'twitter': twitter,
-                'linkedin': linkedin,
-                'github': github,
-                'website': website
+                'twitter': bleach.clean(twitter),
+                'linkedin': bleach.clean(linkedin),
+                'github': bleach.clean(github),
+                'website': bleach.clean(website)
             },
-            'preferred_font': preferred_font
+            'preferred_font': bleach.clean(preferred_font)
         }
-        dm.save_data(users, dm.users_file)
+        dm.session.commit()
         st.success("Profile updated successfully!")
 
-    st.subheader("Security")
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Security</h3>', unsafe_allow_html=True)
     new_password = st.text_input("New Password", type="password", key="new_password")
     confirm_password = st.text_input("Confirm New Password", type="password", key="confirm_new_password")
 
-    if st.button("🔒 Update Password"):
+    if st.button("🔒 Update Password", key="update_password", type="primary"):
         if new_password and new_password == confirm_password and len(new_password) >= 8:
-            users[st.session_state.username]['password'] = dm.hash_password(new_password)
-            dm.save_data(users, dm.users_file)
+            user = dm.session.query(User).filter_by(username=st.session_state.username).first()
+            user.password = dm.hash_password(new_password)
+            dm.session.commit()
             st.success("Password updated successfully!")
         elif new_password != confirm_password:
             st.error("Passwords don't match!")
         elif len(new_password) < 8:
             st.error("Password must be at least 8 characters!")
 
+    st.markdown("</div></div>", unsafe_allow_html=True)
 
-def enhanced_main():
-    load_css()
-
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-
-    if not st.session_state.authenticated:
-        login_page()
-        return
-
-    with st.sidebar:
-        st.markdown('<div class="sidebar-title">🌌 GalaxyWrite</div>', unsafe_allow_html=True)
-
-        page = st.selectbox(
-            "Navigate",
-            [
-                "Dashboard",
-                "Write Blog",
-                "Create Case Study",
-                "My Content",
-                "Public View",
-                "Templates",
-                "Analytics",
-                "Search & Filter",
-                "Profile Settings",
-                "Export Content",
-                "Logout"
-            ]
-        )
-
-        st.markdown("---")
-        st.markdown(f"**👋 Welcome, {st.session_state.username}!**")
-
-        user_blogs = dm.get_user_blogs(st.session_state.username)
-        user_cases = dm.get_user_case_studies(st.session_state.username)
-
-        st.markdown(f"📝 **Blogs:** {len(user_blogs)}")
-        st.markdown(f"🔬 **Case Studies:** {len(user_cases)}")
-
-        total_views = sum(blog.get('views', 0) for blog in user_blogs) + \
-            sum(case.get('views', 0) for case in user_cases)
-        st.markdown(f"👀 **Total Views:** {total_views}")
-
-        if st.button("🚪 Logout"):
-            st.session_state.authenticated = False
-            st.session_state.username = None
-            st.rerun()
-
-    st.markdown('<div class="main-container">', unsafe_allow_html=True)
-
-    if page == "Dashboard":
-        dashboard()
-    elif page == "Write Blog":
-        blog_editor()
-    elif page == "Create Case Study":
-        case_study_editor()
-    elif page == "My Content":
-        my_content()
-    elif page == "Public View":
-        public_view()
-    elif page == "Templates":
-        content_templates()
-    elif page == "Analytics":
-        analytics_dashboard()
-    elif page == "Search & Filter":
-        content_search_and_filter()
-    elif page == "Profile Settings":
-        profile_settings()
-    elif page == "Export Content":
-        export_content()
-    elif page == "Logout":
-        st.session_state.authenticated = False
-        st.session_state.username = None
-        st.rerun()
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("""
-    <div style='text-align: center; color: #a0a0cc; padding: 1rem;'>
-        <p>GalaxyWrite - Your Cosmic Blogging Platform</p>
-        <p>Built with 🌠 using Streamlit</p>
-    </div>
-    """, unsafe_allow_html=True)
+# Content Templates
 
 
 def content_templates():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">📋 Content Templates</h1></div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="header">
+        <h1>📋 Content Templates</h1>
+    </div>
+    <div class="container">
+        <div class="card">
+    """, unsafe_allow_html=True)
 
-    template_type = st.selectbox("Choose template type", ["Blog Templates", "Case Study Templates"])
-
-    if template_type == "Blog Templates":
-        templates = {
+    template_type = st.selectbox("Choose template type", [
+                                 "Blog Templates", "Case Study Templates"], key="template_type")
+    templates = {
+        "Blog Templates": {
             "How-To Guide": {
                 "title": "How to [Do Something]: A Complete Guide",
                 "content": """# Introduction
@@ -1253,9 +1187,8 @@ Overall rating and recommendation.
 ## Alternatives
 Mention similar products worth considering."""
             }
-        }
-    else:
-        templates = {
+        },
+        "Case Study Templates": {
             "Business Case Study": {
                 "title": "[Company/Project Name]: [Brief Description of Challenge]",
                 "problem": """Describe the business challenge or problem:
@@ -1295,11 +1228,12 @@ Mention similar products worth considering."""
 - User adoption and feedback"""
             }
         }
+    }
 
-    selected_template = st.selectbox("Select a template", list(templates.keys()))
-
-    if st.button("📋 Use This Template"):
-        template = templates[selected_template]
+    selected_template = st.selectbox("Select a template", list(
+        templates[template_type].keys()), key="selected_template")
+    if st.button("📋 Use This Template", key="use_template", type="primary"):
+        template = templates[template_type][selected_template]
         if template_type == "Blog Templates":
             st.session_state.template_title = template["title"]
             st.session_state.template_content = template["content"]
@@ -1311,44 +1245,64 @@ Mention similar products worth considering."""
             st.session_state.case_template_results = template["results"]
             st.success("Template loaded! Go to 'Create Case Study' to use it.")
 
-    st.subheader("Template Preview")
-    template = templates[selected_template]
+    st.markdown('<h3 class="text-lg font-semibold mt-6">Template Preview</h3>', unsafe_allow_html=True)
+    template = templates[template_type][selected_template]
     if template_type == "Blog Templates":
-        st.markdown(f"**Title:** {template['title']}")
-        st.markdown("**Content:**")
+        st.markdown(f'<p class="font-semibold">Title:</p><p>{template["title"]}</p>', unsafe_allow_html=True)
+        st.markdown('<p class="font-semibold mt-4">Content:</p>', unsafe_allow_html=True)
         st.code(template['content'])
     else:
-        st.markdown(f"**Title:** {template['title']}")
-        st.markdown("**Problem:**")
+        st.markdown(f'<p class="font-semibold">Title:</p><p>{template["title"]}</p>', unsafe_allow_html=True)
+        st.markdown('<p class="font-semibold mt-4">Problem:</p>', unsafe_allow_html=True)
         st.code(template['problem'])
-        st.markdown("**Solution:**")
+        st.markdown('<p class="font-semibold mt-4">Solution:</p>', unsafe_allow_html=True)
         st.code(template['solution'])
-        st.markdown("**Results:**")
+        st.markdown('<p class="font-semibold mt-4">Results:</p>', unsafe_allow_html=True)
         st.code(template['results'])
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+# Export Content
 
 
 def export_content():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">📤 Export Content</h1></div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="header">
+        <h1>📤 Export Content</h1>
+    </div>
+    <div class="container">
+        <div class="card">
+    """, unsafe_allow_html=True)
 
-    export_format = st.selectbox("Choose export format", ["JSON", "Markdown", "PDF"])
-    content_type = st.selectbox("Content type", ["Blogs Only", "Case Studies Only", "All Content"])
+    export_format = st.selectbox("Choose export format", ["JSON", "Markdown", "PDF"], key="export_format")
+    content_type = st.selectbox(
+        "Content type", ["Blogs Only", "Case Studies Only", "All Content"], key="export_content_type")
 
-    if st.button("Generate Export"):
+    if st.button("Generate Export", key="generate_export", type="primary"):
         user_blogs = dm.get_user_blogs(st.session_state.username)
         user_cases = dm.get_user_case_studies(st.session_state.username)
-
         export_data = {}
         if content_type in ["Blogs Only", "All Content"]:
-            export_data['blogs'] = user_blogs
+            export_data['blogs'] = [{
+                'id': blog.id, 'title': blog.title, 'content': blog.content,
+                'tags': blog.tags, 'created_at': blog.created_at.isoformat(),
+                'views': blog.views, 'font': blog.font
+            } for blog in user_blogs]
         if content_type in ["Case Studies Only", "All Content"]:
-            export_data['case_studies'] = user_cases
+            export_data['case_studies'] = [{
+                'id': case.id, 'title': case.title, 'problem': case.problem,
+                'solution': case.solution, 'results': case.results,
+                'tags': case.tags, 'created_at': case.created_at.isoformat(),
+                'views': case.views, 'font': case.font
+            } for case in user_cases]
 
         if export_format == "JSON":
             st.download_button(
                 "Download JSON",
                 json.dumps(export_data, indent=2),
                 file_name=f"{st.session_state.username}_content.json",
-                mime="application/json"
+                mime="application/json",
+                type="primary"
             )
         elif export_format == "Markdown":
             md_content = "# My Content Export\n\n"
@@ -1356,130 +1310,227 @@ def export_content():
                 md_content += f"## {blog['title']}\n\n{blog['content']}\n\n---\n\n"
             for case in export_data.get('case_studies', []):
                 md_content += f"## {case['title']}\n\n**Problem:** {case['problem']}\n\n**Solution:** {case['solution']}\n\n**Results:** {case['results']}\n\n---\n\n"
-
             st.download_button(
                 "Download Markdown",
                 md_content,
                 file_name=f"{st.session_state.username}_content.md",
-                mime="text/markdown"
+                mime="text/markdown",
+                type="primary"
             )
         elif export_format == "PDF":
             for blog in export_data.get('blogs', []):
-                pdf_data = export_to_pdf('blog', blog)
+                pdf_data = export_to_pdf('blog', Blog(**blog))
                 st.download_button(
                     f"Download {blog['title']} PDF",
                     pdf_data,
                     file_name=f"{blog['title']}.pdf",
-                    mime="application/pdf"
+                    mime="application/pdf",
+                    type="primary"
                 )
             for case in export_data.get('case_studies', []):
-                pdf_data = export_to_pdf('case_study', case)
+                pdf_data = export_to_pdf('case_study', CaseStudy(**case))
                 st.download_button(
                     f"Download {case['title']} PDF",
                     pdf_data,
                     file_name=f"{case['title']}.pdf",
-                    mime="application/pdf"
+                    mime="application/pdf",
+                    type="primary"
                 )
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+# Analytics Dashboard
 
 
 def analytics_dashboard():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">📊 Content Analytics</h1></div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="header">
+        <h1>📊 Content Analytics</h1>
+    </div>
+    <div class="container">
+    """, unsafe_allow_html=True)
 
     user_blogs = dm.get_user_blogs(st.session_state.username)
     user_cases = dm.get_user_case_studies(st.session_state.username)
 
     if not user_blogs and not user_cases:
         st.info("No content available for analytics.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     col1, col2, col3, col4 = st.columns(4)
-
     with col1:
-        total_words = sum(len(blog['content'].split()) for blog in user_blogs)
-        total_words += sum(len(f"{case['problem']} {case['solution']} {case['results']}".split())
-                           for case in user_cases)
-        st.metric("Total Words", f"{total_words:,}")
-
+        total_words = sum(len(blog.content.split()) for blog in user_blogs)
+        total_words += sum(len(f"{case.problem} {case.solution} {case.results}".split()) for case in user_cases)
+        st.markdown(
+            f'<div class="card text-center"><h3 class="text-2xl font-bold text-blue-400">{total_words:,}</h3><p class="text-gray-400">Total Words</p></div>', unsafe_allow_html=True)
     with col2:
-        avg_blog_length = sum(len(blog['content'].split())
-                              for blog in user_blogs) / len(user_blogs) if user_blogs else 0
-        st.metric("Avg Blog Length", f"{int(avg_blog_length)} words")
-
+        avg_blog_length = sum(len(blog.content.split()) for blog in user_blogs) / len(user_blogs) if user_blogs else 0
+        st.markdown(
+            f'<div class="card text-center"><h3 class="text-2xl font-bold text-blue-400">{int(avg_blog_length)}</h3><p class="text-gray-400">Avg Blog Length</p></div>', unsafe_allow_html=True)
     with col3:
         total_tags = set()
         for blog in user_blogs:
-            total_tags.update(blog.get('tags', []))
+            total_tags.update(blog.tags)
         for case in user_cases:
-            total_tags.update(case.get('tags', []))
-        st.metric("Unique Tags", len(total_tags))
-
+            total_tags.update(case.tags)
+        st.markdown(
+            f'<div class="card text-center"><h3 class="text-2xl font-bold text-blue-400">{len(total_tags)}</h3><p class="text-gray-400">Unique Tags</p></div>', unsafe_allow_html=True)
     with col4:
-        total_views = sum(blog.get('views', 0) for blog in user_blogs)
-        total_views += sum(case.get('views', 0) for case in user_cases)
-        st.metric("Total Views", total_views)
+        total_views = sum(blog.views for blog in user_blogs) + sum(case.views for case in user_cases)
+        st.markdown(
+            f'<div class="card text-center"><h3 class="text-2xl font-bold text-blue-400">{total_views}</h3><p class="text-gray-400">Total Views</p></div>', unsafe_allow_html=True)
 
-    st.subheader("Publishing Activity")
-    dates = []
-    for blog in user_blogs:
-        dates.append(blog['created_at'][:10])
-    for case in user_cases:
-        dates.append(case['created_at'][:10])
-
+    st.markdown('<h2 class="text-xl font-semibold mt-8">Publishing Activity</h2>', unsafe_allow_html=True)
+    dates = [blog.created_at.strftime('%Y-%m-%d') for blog in user_blogs] + \
+        [case.created_at.strftime('%Y-%m-%d') for case in user_cases]
     date_counts = {}
     for date in dates:
         date_counts[date] = date_counts.get(date, 0) + 1
-
     if date_counts:
         st.bar_chart(date_counts)
 
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# Search and Filter
+
 
 def content_search_and_filter():
-    st.markdown('<div class="fixed-header"><h1 class="app-header">🔍 Advanced Search</h1></div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="header">
+        <h1>🔍 Advanced Search</h1>
+    </div>
+    <div class="container">
+        <div class="card">
+    """, unsafe_allow_html=True)
 
-    search_query = st.text_input("Search your content", placeholder="Enter keywords...")
-
+    search_query = st.text_input("Search your content", placeholder="Enter keywords...", key="search_query")
     col1, col2, col3 = st.columns(3)
     with col1:
-        content_type_filter = st.selectbox("Content Type", ["All", "Blogs", "Case Studies"])
+        content_type_filter = st.selectbox("Content Type", ["All", "Blogs", "Case Studies"], key="content_type_filter")
     with col2:
-        date_from = st.date_input("From Date", datetime(2020, 1, 1).date())
+        date_from = st.date_input("From Date", datetime(2020, 1, 1).date(), key="date_from")
     with col3:
-        date_to = st.date_input("To Date", datetime.now().date())
+        date_to = st.date_input("To Date", datetime.now().date(), key="date_to")
 
-    tag_filter = st.text_input("Filter by tags (comma-separated)", placeholder="tech, business")
+    tag_filter = st.text_input("Filter by tags (comma-separated)", placeholder="tech, business", key="tag_filter")
 
-    if st.button("🔍 Search"):
+    if st.button("🔍 Search", key="search_btn", type="primary"):
         user_blogs = dm.get_user_blogs(st.session_state.username)
         user_cases = dm.get_user_case_studies(st.session_state.username)
-
         results = []
 
         if content_type_filter in ["All", "Blogs"]:
             for blog in user_blogs:
-                if search_query.lower() in blog['title'].lower() or search_query.lower() in blog['content'].lower():
-                    blog_date = datetime.fromisoformat(blog['created_at']).date()
+                if search_query.lower() in blog.title.lower() or search_query.lower() in blog.content.lower():
+                    blog_date = blog.created_at.date()
                     if date_from <= blog_date <= date_to:
-                        if not tag_filter or any(tag.strip().lower() in [t.lower() for t in blog.get('tags', [])] for tag in tag_filter.split(',')):
+                        if not tag_filter or any(tag.strip().lower() in [t.lower() for t in blog.tags] for tag in tag_filter.split(',')):
                             results.append(('blog', blog))
 
         if content_type_filter in ["All", "Case Studies"]:
             for case in user_cases:
-                search_text = f"{case['title']} {case['problem']} {case['solution']} {case['results']}"
+                search_text = f"{case.title} {case.problem} {case.solution} {case.results}"
                 if search_query.lower() in search_text.lower():
-                    case_date = datetime.fromisoformat(case['created_at']).date()
+                    case_date = case.created_at.date()
                     if date_from <= case_date <= date_to:
-                        if not tag_filter or any(tag.strip().lower() in [t.lower() for t in case.get('tags', [])] for tag in tag_filter.split(',')):
+                        if not tag_filter or any(tag.strip().lower() in [t.lower() for t in case.tags] for tag in tag_filter.split(',')):
                             results.append(('case_study', case))
 
-        st.write(f"Found {len(results)} results:")
+        st.markdown(f'<p class="text-lg font-semibold">Found {len(results)} results:</p>', unsafe_allow_html=True)
         for content_type, content in results:
             if content_type == 'blog':
-                st.markdown(f"**📝 {content['title']}** - {content['created_at'][:10]}")
-                st.write(content['content'][:200] + "...")
+                st.markdown(
+                    f'<p class="font-semibold">📝 {content.title}</p><p class="text-sm text-gray-400">{content.created_at.strftime("%Y-%m-%d")}</p><p>{content.content[:200]}...</p><hr class="border-gray-600">', unsafe_allow_html=True)
             else:
-                st.markdown(f"**🔬 {content['title']}** - {content['created_at'][:10]}")
-                st.write(content['problem'][:200] + "...")
-            st.markdown("---")
+                st.markdown(
+                    f'<p class="font-semibold">🔬 {content.title}</p><p class="text-sm text-gray-400">{content.created_at.strftime("%Y-%m-%d")}</p><p>{content.problem[:200]}...</p><hr class="border-gray-600">', unsafe_allow_html=True)
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+# Main Function
+
+
+def enhanced_main():
+    load_css()
+
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+
+    page = st.query_params.get('page', ['main'])[0]
+    username = st.query_params.get('username', [''])[0]
+
+    if page == 'profile' and username:
+        profile_view(username)
+        return
+
+    if not st.session_state.authenticated:
+        login_page()
+        return
+
+    with st.sidebar:
+        st.markdown('<div class="sidebar-title">🌌 GalaxyWrite</div>', unsafe_allow_html=True)
+        page = st.selectbox(
+            "Navigate",
+            [
+                "Main Page",
+                "Dashboard",
+                "Write Blog",
+                "Create Case Study",
+                "My Content",
+                "Templates",
+                "Analytics",
+                "Search & Filter",
+                "Profile Settings",
+                "Export Content",
+                "Logout"
+            ],
+            key="nav_select"
+        )
+        st.markdown(
+            f'<p class="text-lg font-semibold">👋 Welcome, {st.session_state.username}!</p>', unsafe_allow_html=True)
+        user_blogs = dm.get_user_blogs(st.session_state.username)
+        user_cases = dm.get_user_case_studies(st.session_state.username)
+        st.markdown(f'<p>📝 <strong>Blogs:</strong> {len(user_blogs)}</p>', unsafe_allow_html=True)
+        st.markdown(f'<p>🔬 <strong>Case Studies:</strong> {len(user_cases)}</p>', unsafe_allow_html=True)
+        total_views = sum(blog.views for blog in user_blogs) + sum(case.views for case in user_cases)
+        st.markdown(f'<p>👀 <strong>Total Views:</strong> {total_views}</p>', unsafe_allow_html=True)
+        if st.button("🚪 Logout", key="logout_btn", type="primary"):
+            st.session_state.authenticated = False
+            st.session_state.username = None
+            st.rerun()
+
+    if page == "Main Page":
+        main_page()
+    elif page == "Dashboard":
+        dashboard()
+    elif page == "Write Blog":
+        blog_editor()
+    elif page == "Create Case Study":
+        case_study_editor()
+    elif page == "My Content":
+        my_content()
+    elif page == "Templates":
+        content_templates()
+    elif page == "Analytics":
+        analytics_dashboard()
+    elif page == "Search & Filter":
+        content_search_and_filter()
+    elif page == "Profile Settings":
+        profile_settings()
+    elif page == "Export Content":
+        export_content()
+    elif page == "Logout":
+        st.session_state.authenticated = False
+        st.session_state.username = None
+        st.rerun()
+
+    st.markdown("""
+    <div class="text-center text-gray-400 py-4">
+        <p>GalaxyWrite - Your Cosmic Blogging Platform</p>
+        <p>Built with 🌠 by passionate creators</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

@@ -1,2 +1,6 @@
-streamlit>=1.25.0
-reportlab>=4.0.0
+streamlit
+sqlalchemy
+bcrypt
+streamlit-authenticator
+bleach
+reportlab
