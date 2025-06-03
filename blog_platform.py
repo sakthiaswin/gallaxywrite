@@ -106,7 +106,7 @@ class Blog(Base):
     is_published = Column(Boolean, default=True)
     user = relationship("User", back_populates="blogs")
     comments = relationship("Comment", back_populates="blog")
-    __table_args__ = (Index('idx_blog_username', 'username', 'content_type'))
+    __table_args__ = (Index('idx_blog_username', 'username', 'content_type'),)
 
 
 class CaseStudy(Base):
