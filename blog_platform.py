@@ -505,7 +505,7 @@ def login_page():
                 'password': user.password,
                 'email': user.email
             }
-            for user in dm.session.query(User).all()
+            for user in dm.session_factory.query(User).all()
         }
     }
     authenticator = stauth.Authenticate(
@@ -821,7 +821,7 @@ def blog_editor():
         if st.button("🚀 Publish", key="publish_blog", type="primary"):
             if title and content:
                 blog_id = dm.save_blog(st.session_state.username, title, content, tags, media_ids, font)
-                blog = dm.session.query(Blog).filter_by(id=blog_id).first()
+                blog = dm.session_factory.query(Blog).filter_by(id=blog_id).first()
                 st.success(f"Blog published successfully! ID: {blog_id}")
                 st.markdown(
                     f'<a href="{blog.public_link}" class="text-blue-300 hover:underline">Share your blog</a>', unsafe_allow_html=True)
@@ -962,7 +962,7 @@ def case_study_editor():
             if title and problem and solution:
                 case_id = dm.save_case_study(st.session_state.username, title, problem,
                                              solution, results, tags, media_ids, font)
-                case = dm.session.query(CaseStudy).filter_by(id=case_id).first()
+                case = dm.session_factory.query(CaseStudy).filter_by(id=case_id).first()
                 st.success(f"Case study published successfully! ID: {case_id}")
                 st.markdown(
                     f'<a href="{case.public_link}" class="text-blue-300 hover:underline">Share your case study</a>', unsafe_allow_html=True)
@@ -1150,7 +1150,7 @@ def profile_settings():
         'website', ''), placeholder="https://yourwebsite.com", key="website")
 
     if st.button("💾 Save Profile", key="save_profile", type="primary"):
-        user = dm.session.query(User).filter_by(username=st.session_state.username).first()
+        user = dm.session_factory.query(User).filter_by(username=st.session_state.username).first()
         user.profile = {
             'bio': bleach.clean(bio),
             'social_links': {
@@ -1161,7 +1161,7 @@ def profile_settings():
             },
             'preferred_font': bleach.clean(preferred_font)
         }
-        dm.session.commit()
+        dm.session_factory.commit()
         st.success("Profile updated successfully!")
 
     st.markdown('<h3 class="text-lg font-semibold mt-6">Security</h3>', unsafe_allow_html=True)
@@ -1170,9 +1170,9 @@ def profile_settings():
 
     if st.button("🔒 Update Password", key="update_password", type="primary"):
         if new_password and new_password == confirm_password and len(new_password) >= 8:
-            user = dm.session.query(User).filter_by(username=st.session_state.username).first()
+            user = dm.session_factory.query(User).filter_by(username=st.session_state.username).first()
             user.password = dm.hash_password(new_password)
-            dm.session.commit()
+            dm.session_factory.commit()
             st.success("Password updated successfully!")
         elif new_password != confirm_password:
             st.error("Passwords don't match!")
