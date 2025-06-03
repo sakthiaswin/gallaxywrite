@@ -293,7 +293,7 @@ class AnalyticsEvent(Base):
     content_type = Column(String(20))
     content_id = Column(String(36))
     timestamp = Column(DateTime, default=datetime.utcnow)
-    metadata = Column(JSON, default={})
+    metadataa = Column(JSON, default={})
     user = relationship("User", back_populates="analytics_events")
     __table_args__ = (Index('idx_analytics_event', 'event_type', 'timestamp'),)
 
@@ -317,13 +317,13 @@ class Draft(Base):
 
 # Association Tables
 blog_tags = Table(
-    'blog_tags', Base.metadata,
+    'blog_tags', Base.metadataa,
     Column('blog_id', String(36), ForeignKey('blogs.id'), primary_key=True),
     Column('tag_id', String(36), ForeignKey('tags.id'), primary_key=True)
 )
 
 case_study_tags = Table(
-    'case_study_tags', Base.metadata,
+    'case_study_tags', Base.metadataa,
     Column('case_study_id', String(36), ForeignKey('case_studies.id'), primary_key=True),
     Column('tag_id', String(36), ForeignKey('tags.id'), primary_key=True)
 )
@@ -974,7 +974,7 @@ class DataManager:
             logger.error(f"Error marking notification {notification_id} as read: {str(e)}")
             return False
 
-    def log_analytics_event(self, username: Optional[str], event_type: str, content_type: Optional[str] = None, content_id: Optional[str] = None, metadata: Dict[str, Any] = None) -> bool:
+    def log_analytics_event(self, username: Optional[str], event_type: str, content_type: Optional[str] = None, content_id: Optional[str] = None, metadataa: Dict[str, Any] = None) -> bool:
         """
         Log an analytics event.
         Args:
@@ -982,7 +982,7 @@ class DataManager:
             event_type: Type of event (e.g., view, click).
             content_type: Associated content type.
             content_id: Associated content ID.
-            metadata: Additional event data.
+            metadataa: Additional event data.
         Returns:
             bool: True if logged successfully, False otherwise.
         """
@@ -996,7 +996,7 @@ class DataManager:
                     event_type=event_type,
                     content_type=content_type,
                     content_id=content_id,
-                    metadata=metadata or {}
+                    metadataa=metadataa or {}
                 )
                 session.add(event)
                 session.commit()
@@ -1801,7 +1801,7 @@ def analytics_page():
             User).filter_by(username=username).first().id).limit(20).all()
         event_data = [
             {'Event Type': e.event_type, 'Content Type': e.content_type or 'N/A',
-                'Content ID': e.content_id or 'N/A', 'Timestamp': e.timestamp, 'Metadata': json.dumps(e.metadata)}
+                'Content ID': e.content_id or 'N/A', 'Timestamp': e.timestamp, 'Metadata': json.dumps(e.metadataa)}
             for e in events
         ]
         st.dataframe(event_data)
@@ -1853,7 +1853,7 @@ def admin_dashboard():
                 st.success(f"User {user_to_toggle} status updated to {new_status}")
                 logger.info(f"Admin {st.session_state.username} updated {user_to_toggle} status to {new_status}")
                 dm.log_analytics_event(st.session_state.username, 'admin_update_user',
-                                       metadata={'user': user_to_toggle})
+                                       metadataa={'user': user_to_toggle})
     except SQLAlchemyError as e:
         logger.error(f"Error managing users in admin dashboard: {str(e)}")
         st.error("Error managing users")
@@ -1930,7 +1930,7 @@ def public_profile_page():
                         st.success(f"You are now following {username}")
                         logger.info(f"{st.session_state.username} followed {username}")
                         dm.log_analytics_event(st.session_state.username, 'follow',
-                                               metadata={'followed_user': username})
+                                               metadataa={'followed_user': username})
                         st.rerun()
                 else:
                     if st.button(f"Unfollow {username}"):
@@ -1939,7 +1939,7 @@ def public_profile_page():
                         st.success(f"You have unfollowed {username}")
                         logger.info(f"{st.session_state.username} unfollowed {username}")
                         dm.log_analytics_event(st.session_state.username, 'unfollow',
-                                               metadata={'unfollowed_user': username})
+                                               metadataa={'unfollowed_user': username})
                         st.rerun()
 
             st.subheader("Public Content")
@@ -1950,7 +1950,7 @@ def public_profile_page():
             for content in blogs + case_studies:
                 st.markdown(f"- [{content.title}]({content.public_link}) ({content.content_type.capitalize()})")
             dm.log_analytics_event(st.session_state.username if st.session_state.authenticated else None,
-                                   'view_profile', metadata={'profile_user': username})
+                                   'view_profile', metadataa={'profile_user': username})
     except SQLAlchemyError as e:
         logger.error(f"Error loading public profile for {username}: {str(e)}")
         st.error("Error loading profile")
@@ -2027,7 +2027,7 @@ def tag_explorer_page():
                 dm.log_analytics_event(
                     st.session_state.username if st.session_state.authenticated else None,
                     'explore_tag',
-                    metadata={'tag': selected_tag}
+                    metadataa={'tag': selected_tag}
                 )
     except SQLAlchemyError as e:
         logger.error(f"Error exploring tags: {str(e)}")
